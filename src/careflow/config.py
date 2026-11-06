@@ -1,0 +1,41 @@
+import os
+from dataclasses import dataclass
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+MAX_REPAIRS = 2
+REPAIR_ERROR_MAX_CHARS = 500
+INTAKE_RECENT_TURNS = 6
+INTAKE_MAX_ITEMS = 5
+SUMMARY_MAX_CHARS = 200
+LLM_TIMEOUT_SECONDS = 60
+CLINIC_TIMEZONE = "Asia/Kolkata"
+SLOT_DAYS_AHEAD = 21
+SLOT_TIMES = ("09:00", "10:00", "11:00", "14:00")
+SLOT_MINUTES = 30
+
+
+@dataclass(frozen=True)
+class Settings:
+    llm_model: str = ""
+    llm_api_key: str = ""
+    llm_base_url: str = ""
+    llm_fallback_model: str = ""
+    llm_temperature: float = 0
+    database_url: str = ""
+    test_database_url: str = ""
+
+
+def load_settings() -> Settings:
+    load_dotenv(PROJECT_ROOT / ".env")
+    return Settings(
+        llm_model=os.getenv("LLM_MODEL", ""),
+        llm_api_key=os.getenv("LLM_API_KEY", ""),
+        llm_base_url=os.getenv("LLM_BASE_URL", ""),
+        llm_fallback_model=os.getenv("LLM_FALLBACK_MODEL", ""),
+        llm_temperature=float(os.getenv("LLM_TEMPERATURE") or 0),
+        database_url=os.getenv("DATABASE_URL", ""),
+        test_database_url=os.getenv("TEST_DATABASE_URL", ""),
+    )
