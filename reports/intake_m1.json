@@ -1,0 +1,9 @@
+{
+  "cases": 30,
+  "valid_rate": 1.0,
+  "urgency_accuracy": 0.9666666666666667,
+  "kinds_accuracy": 0.9333333333333333,
+  "injection_accuracy": 0.9666666666666667,
+  "emergency_recall": 1.0,
+  "missed_emergency_ids": []
+}
