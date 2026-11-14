@@ -3,6 +3,8 @@ from pathlib import Path
 
 import pytest
 
+from careflow.agents.tools import TOOLS, ToolSpec
+
 SRC = Path(__file__).resolve().parents[1] / "src" / "careflow"
 INTAKE_FORBIDDEN = ("careflow.db", "careflow.mcp_servers", "careflow.knowledge", "careflow.memory")
 
@@ -49,3 +51,35 @@ def test_no_print_in_library_code(path: Path) -> None:
         if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "print"
     ]
     assert not calls
+
+
+REPOSITORY_WRITES = (
+    "book_appointment",
+    "cancel_appointment",
+    "reschedule_appointment",
+    "create_coordinator_task",
+)
+
+
+def repository_calls(path: Path) -> set[str]:
+    return {
+        node.attr
+        for node in ast.walk(ast.parse(path.read_text()))
+        if isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "repository"
+    }
+
+
+@pytest.mark.parametrize("spec", TOOLS.values(), ids=list(TOOLS))
+def test_tool_args_never_take_patient_id(spec: ToolSpec) -> None:
+    assert "patient_id" not in spec.args_model.model_fields
+
+
+def test_repository_writes_only_called_from_tools() -> None:
+    callers = {
+        str(path.relative_to(SRC))
+        for path in SRC.rglob("*.py")
+        if path.parent.name != "db" and repository_calls(path) & set(REPOSITORY_WRITES)
+    }
+    assert callers == {"agents/tools.py"}

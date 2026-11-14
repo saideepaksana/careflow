@@ -3,6 +3,7 @@ from pathlib import Path
 import psycopg
 from psycopg.rows import dict_row
 
+Connection = psycopg.Connection
 MIGRATIONS_DIR = Path(__file__).with_name("migrations")
 
 

@@ -5,8 +5,17 @@ import litellm
 from pydantic import BaseModel, ValidationError
 
 from careflow.config import LLM_TIMEOUT_SECONDS, MAX_REPAIRS, REPAIR_ERROR_MAX_CHARS, Settings
+from careflow.llm.reliability import CircuitBreaker, CircuitOpenError, call_with_retry
 
 T = TypeVar("T", bound=BaseModel)
+
+TRANSIENT_ERRORS = (
+    litellm.RateLimitError,
+    litellm.APIConnectionError,
+    litellm.Timeout,
+    litellm.InternalServerError,
+    litellm.ServiceUnavailableError,
+)
 
 
 class LLM(Protocol):
@@ -17,11 +26,24 @@ class LLMOutputError(Exception):
     pass
 
 
+class LLMUnavailableError(Exception):
+    pass
+
+
 class LiteLLMClient:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        self.breaker = CircuitBreaker(TRANSIENT_ERRORS)
 
     def complete(self, system: str, user: str) -> str:
+        try:
+            return self.breaker.call(
+                lambda: call_with_retry(lambda: self.send(system, user), TRANSIENT_ERRORS)
+            )
+        except (*TRANSIENT_ERRORS, CircuitOpenError) as exc:
+            raise LLMUnavailableError(type(exc).__name__) from exc
+
+    def send(self, system: str, user: str) -> str:
         response = litellm.completion(
             model=self.settings.llm_model,
             messages=[
