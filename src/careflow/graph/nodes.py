@@ -28,8 +28,9 @@ from careflow.db.connection import Connection
 from careflow.graph import executor, replies
 from careflow.graph.state import WorkflowState
 from careflow.knowledge.rerank import Reranker
-from careflow.knowledge.search import retrieve
+from careflow.knowledge.search import RetrievedChunk
 from careflow.llm.gateway import LLM, LLMOutputError, LLMUnavailableError
+from careflow.mcp_servers.client import CarePlanView, McpTools
 from careflow.memory.embeddings import Embedder
 from careflow.safety.gate import EscalationLevel, GateDecision, evaluate_gate
 from careflow.safety.verifier import Verdict, VerdictKind, verify_plan
@@ -80,6 +81,49 @@ def read_decision(raw: object) -> CoordinatorDecision:
         return CoordinatorDecision(approved=False)
 
 
+def plan_specialty(
+    tools: McpTools, view: CarePlanView | None, request: SchedulingRequest
+) -> str | None:
+    if request.action == AppointmentAction.reschedule and request.appointment_id:
+        appointment = tools.read("get_appointment", {"appointment_id": request.appointment_id})
+        return appointment["specialty"] if appointment else None
+    if request.care_plan_item_id:
+        items = {item.id: item for item in (view.items if view else [])}
+        item = items.get(request.care_plan_item_id)
+        return item.specialty if item else None
+    return request.specialty.value if request.specialty else None
+
+
+def find_slot(tools: McpTools, specialty: str, request: SchedulingRequest) -> dict | None:
+    tomorrow = clock.today() + timedelta(days=1)
+    earliest = max(request.earliest_date or tomorrow, tomorrow)
+    latest = request.latest_date or clock.today() + timedelta(days=SLOT_DAYS_AHEAD)
+    slots = tools.free_slots(specialty, earliest, latest, SLOT_SCAN_LIMIT)
+    return choose_slot(request, [slot.model_dump() for slot in slots])
+
+
+def build_plan(
+    tools: McpTools, view: CarePlanView | None, request: SchedulingRequest
+) -> SchedulingPlan:
+    plan = SchedulingPlan(
+        action=request.action,
+        appointment_id=request.appointment_id,
+        care_plan_item_id=request.care_plan_item_id,
+    )
+    specialty = plan_specialty(tools, view, request)
+    if request.action == AppointmentAction.cancel or specialty is None:
+        return plan
+    slot = find_slot(tools, specialty, request) or {}
+    return plan.model_copy(
+        update={
+            "specialty": Specialty(specialty),
+            "slot_id": slot.get("id"),
+            "starts_at": slot.get("starts_at"),
+            "clinician_name": slot.get("clinician_name"),
+        }
+    )
+
+
 def task_key(state: WorkflowState, node: str) -> str:
     return f"{state['thread_id']}:task:{node}:{state.get('current')}"
 
@@ -100,12 +144,15 @@ class WorkflowNodes:
             )
         return {"visits": visits, "replies": []}
 
+    def tools(self, state: WorkflowState) -> McpTools:
+        deps = self.deps
+        return McpTools(deps.conn, state["patient_id"], deps.embedder, deps.reranker)
+
     def create_task(
         self, state: WorkflowState, node: str, kind: str, priority: str, title: str, detail: str
     ) -> dict:
         return executor.create_task(
-            self.deps.conn,
-            state["patient_id"],
+            self.tools(state),
             task_key(state, node),
             kind,
             priority,
@@ -126,8 +173,7 @@ class WorkflowNodes:
         return {"intake": record.model_dump(mode="json")}
 
     def safety_gate(self, state: WorkflowState) -> dict:
-        plan = repository.get_current_care_plan(self.deps.conn, state["patient_id"])
-        signs = [item for item in (plan or {}).get("items", []) if item["kind"] == "warning_sign"]
+        signs = repository.get_warning_signs(self.deps.conn, state["patient_id"])
         record = IntakeRecord.model_validate(state["intake"]) if state.get("intake") else None
         decision = evaluate_gate(state["message"], record, signs)
         route = "supervisor" if decision.level == EscalationLevel.NONE else "escalate"
@@ -191,11 +237,10 @@ class WorkflowNodes:
         }
 
     def answer_question(self, state: WorkflowState) -> dict:
-        deps, item = self.deps, self.current_item(state)
-        chunks = retrieve(
-            deps.conn, deps.embedder, deps.reranker, state["patient_id"], item.summary
-        )
-        result = answer_question(deps.llm, item.summary, chunks)
+        item = self.current_item(state)
+        found = self.tools(state).search(item.summary)
+        chunks = [RetrievedChunk.model_validate(chunk) for chunk in found]
+        result = answer_question(self.deps.llm, item.summary, chunks)
         if result.handed_off:
             detail = f"{item.summary} (reason: {result.handoff_reason})"
             self.create_task(
@@ -216,75 +261,24 @@ class WorkflowNodes:
             "outcome": [*state["outcome"], f"hand_off:{reason}"],
         }
 
-    def plan_items(self, patient_id: str) -> list[dict]:
-        plan = repository.get_current_care_plan(self.deps.conn, patient_id) or {"items": []}
-        return [
-            {
-                "id": item["id"],
-                "kind": item["kind"],
-                "description": item["description"],
-                "specialty": item["specialty"],
-                "due_date": plan["published_on"] + timedelta(days=item["due_within_days"]),
-            }
-            for item in plan["items"]
-            if item["kind"] in BOOKABLE_KINDS
-        ]
-
     def plan_schedule(self, state: WorkflowState) -> dict:
-        conn, patient_id = self.deps.conn, state["patient_id"]
-        appointments = repository.list_appointments(conn, patient_id)
+        tools = self.tools(state)
+        view = tools.care_plan()
+        items = [item for item in (view.items if view else []) if item.kind in BOOKABLE_KINDS]
         try:
             request = interpret_request(
                 self.deps.llm,
                 self.current_item(state),
-                self.plan_items(patient_id),
-                appointments,
+                [item.model_dump(mode="json") for item in items],
+                tools.read("list_appointments") or [],
                 state.get("memories", []),
                 state["feedback"],
             )
         except LLM_ERRORS:
             return {"route": "hand_off", "handoff_reason": "planner_failed"}
-        plan = self.build_plan(patient_id, request)
+        plan = build_plan(tools, view, request)
         replans = state["replans"] + (1 if state["feedback"] else 0)
         return {"plan": plan.model_dump(mode="json"), "replans": replans, "route": "verify"}
-
-    def plan_specialty(self, patient_id: str, request: SchedulingRequest) -> str | None:
-        conn = self.deps.conn
-        if request.action == AppointmentAction.reschedule and request.appointment_id:
-            appointment = repository.get_appointment(conn, patient_id, request.appointment_id)
-            return appointment["specialty"] if appointment else None
-        if request.care_plan_item_id:
-            item = repository.get_plan_item(conn, patient_id, request.care_plan_item_id)
-            return item["specialty"] if item else None
-        return request.specialty.value if request.specialty else None
-
-    def find_slot(self, specialty: str, request: SchedulingRequest) -> dict | None:
-        tomorrow = clock.today() + timedelta(days=1)
-        earliest = max(request.earliest_date or tomorrow, tomorrow)
-        latest = request.latest_date or clock.today() + timedelta(days=SLOT_DAYS_AHEAD)
-        slots = repository.find_free_slots(
-            self.deps.conn, specialty, earliest, latest, limit=SLOT_SCAN_LIMIT
-        )
-        return choose_slot(request, slots)
-
-    def build_plan(self, patient_id: str, request: SchedulingRequest) -> SchedulingPlan:
-        plan = SchedulingPlan(
-            action=request.action,
-            appointment_id=request.appointment_id,
-            care_plan_item_id=request.care_plan_item_id,
-        )
-        specialty = self.plan_specialty(patient_id, request)
-        if request.action == AppointmentAction.cancel or specialty is None:
-            return plan
-        slot = self.find_slot(specialty, request) or {}
-        return plan.model_copy(
-            update={
-                "specialty": Specialty(specialty),
-                "slot_id": slot.get("id"),
-                "starts_at": slot.get("starts_at"),
-                "clinician_name": slot.get("clinician_name"),
-            }
-        )
 
     def verify(self, state: WorkflowState) -> dict:
         plan = SchedulingPlan.model_validate(state["plan"])
@@ -332,7 +326,7 @@ class WorkflowNodes:
         )
         posted = self.post(state, "await_coordinator", [replies.APPROVAL_PENDING_REPLY])
         decision = read_decision(interrupt({"kind": "coordinator", "task_id": task["task_id"]}))
-        executor.resolve_task(self.deps.conn, task["task_id"], decision.note)
+        executor.resolve_task(self.tools(state), task["task_id"], decision.note)
         label = f"coordinator:{'approved' if decision.approved else 'denied'}"
         update = {**posted, "outcome": [*state["outcome"], label]}
         if decision.approved:
@@ -343,6 +337,7 @@ class WorkflowNodes:
         plan = SchedulingPlan.model_validate(state["plan"])
         result = executor.execute_plan(
             self.deps.conn,
+            self.tools(state),
             state["patient_id"],
             state["thread_id"],
             plan,

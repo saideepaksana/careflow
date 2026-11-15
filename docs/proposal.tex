@@ -369,7 +369,7 @@ All model calls go through a provider-agnostic LLM gateway (built on LiteLLM). I
 \toprule
 Backend & Python 3.11+, FastAPI, Pydantic v2 \\
 Orchestration & LangGraph with the PostgreSQL checkpointer \\
-Tools & Model Context Protocol servers (FastMCP)~\cite{mcp}: \texttt{records}, \texttt{knowledge}, \texttt{actions} \\
+Tools & Model Context Protocol servers (MCP Python SDK \texttt{MCPServer}, formerly FastMCP)~\cite{mcp}: \texttt{records}, \texttt{knowledge}, \texttt{actions} \\
 Storage & PostgreSQL with pgvector (Docker Compose) \\
 Retrieval & PostgreSQL full-text search + local \texttt{bge-small} embeddings + \texttt{bge-reranker} cross-encoder (CPU) \\
 LLM & LiteLLM-based gateway; open-weight models through OpenAI-compatible providers, configured by environment variables \\

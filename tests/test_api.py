@@ -131,15 +131,24 @@ def test_confirm_books_the_appointment(fresh_db_url: str) -> None:
     assert again.status_code == 409
 
 
+COORDINATOR_GETS = (
+    "/api/coordinator/tasks",
+    "/api/coordinator/patients",
+    "/api/coordinator/patients/P001/timeline",
+    "/api/coordinator/patients/P001/progress",
+)
+
+
+@pytest.mark.parametrize("path", COORDINATOR_GETS)
 @pytest.mark.parametrize(
     ("token", "sent", "status"),
     [(TOKEN, "", 403), (TOKEN, "wrong", 403), ("", "", 403), (TOKEN, TOKEN, 200)],
 )
 def test_coordinator_endpoints_need_the_token(
-    fresh_db_url: str, token: str, sent: str, status: int
+    fresh_db_url: str, path: str, token: str, sent: str, status: int
 ) -> None:
     client = make_client(fresh_db_url, QUESTION_SCRIPT, token)
-    response = client.get("/api/coordinator/tasks", headers={"X-Coordinator-Token": sent})
+    response = client.get(path, headers={"X-Coordinator-Token": sent})
     assert response.status_code == status
 
 
@@ -159,3 +168,67 @@ def test_coordinator_decision_resumes_the_run(fresh_db_url: str) -> None:
     assert decided.json() == {"task_id": task["id"], "run_status": "done"}
     assert repeat.status_code == 409
     assert messages[-1]["content"].startswith("Done.")
+
+
+COORDINATOR = {"X-Coordinator-Token": TOKEN}
+
+
+def progress_of(client: TestClient, patient_id: str) -> dict[str, str]:
+    rows = client.get(f"/api/coordinator/patients/{patient_id}/progress", headers=COORDINATOR)
+    return {row["id"]: row["status"] for row in rows.json()}
+
+
+def confirm(client: TestClient, headers: dict, conversation_id: str) -> dict:
+    path = f"/api/conversations/{conversation_id}/confirm"
+    return client.post(path, json={"approved": True}, headers=headers).json()
+
+
+def test_confirm_stores_the_patient_answer(fresh_db_url: str) -> None:
+    client = make_client(fresh_db_url, book_lab("2026-11-03"))
+    headers, conversation_id, _ = start_booking(client, "Book my blood test tomorrow")
+    confirm(client, headers, conversation_id)
+    messages = client.get(f"/api/conversations/{conversation_id}/messages", headers=headers)
+    assert [m["content"] for m in messages.json() if m["role"] == "patient"][-1] == "Yes"
+
+
+def test_progress_moves_from_open_to_booked(fresh_db_url: str) -> None:
+    client = make_client(fresh_db_url, book_lab("2026-11-03"))
+    before = progress_of(client, "P001")["CP001-v2-02"]
+    headers, conversation_id, _ = start_booking(client, "Book my blood test tomorrow")
+    confirm(client, headers, conversation_id)
+    assert (before, progress_of(client, "P001")["CP001-v2-02"]) == ("open", "booked")
+
+
+def test_progress_marks_booking_after_due_date_late(fresh_db_url: str) -> None:
+    client = make_client(fresh_db_url, book_lab("2026-11-10"))
+    headers, conversation_id, _ = start_booking(client, "Book my blood test on the 10th")
+    confirm(client, headers, conversation_id)
+    [task] = client.get("/api/coordinator/tasks", headers=COORDINATOR).json()
+    decision = {"approved": True, "note": ""}
+    client.post(f"/api/coordinator/tasks/{task['id']}/decision", json=decision, headers=COORDINATOR)
+    assert progress_of(client, "P001")["CP001-v2-02"] == "late"
+
+
+def test_progress_marks_missed_item_overdue(
+    fresh_db_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = make_client(fresh_db_url, QUESTION_SCRIPT)
+    monkeypatch.setenv("CAREFLOW_TODAY", "2026-11-30")
+    assert progress_of(client, "P004") == {"CP004-v1-01": "booked", "CP004-v1-02": "overdue"}
+
+
+def test_timeline_shows_message_task_and_booking(fresh_db_url: str) -> None:
+    client = make_client(fresh_db_url, book_lab("2026-11-10"))
+    headers, conversation_id, _ = start_booking(client, "Book my blood test on the 10th")
+    confirm(client, headers, conversation_id)
+    response = client.get("/api/coordinator/patients/P001/timeline", headers=COORDINATOR)
+    kinds = {event["kind"] for event in response.json()}
+    texts = [event["text"] for event in response.json()]
+    assert {"message", "task_created"} <= kinds
+    assert "Book my blood test on the 10th" in texts
+
+
+def test_timeline_of_unknown_patient_is_404(fresh_db_url: str) -> None:
+    client = make_client(fresh_db_url, QUESTION_SCRIPT)
+    response = client.get("/api/coordinator/patients/P999/timeline", headers=COORDINATOR)
+    assert response.status_code == 404

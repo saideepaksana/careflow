@@ -1,16 +1,20 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useState } from "react";
 import {
   confirmChange,
   createConversation,
   endConversation,
+  listMessages,
   listPatients,
   login,
   Patient,
   Reply,
   sendMessage,
 } from "./api";
+import Coordinator from "./Coordinator";
 
-type ChatLine = { role: "patient" | "assistant"; text: string };
+const CHAT_POLL_MS = 10000;
+
+type ChatLine = { role: "patient" | "assistant" | "coordinator"; text: string };
 type Session = { token: string; patientName: string };
 
 function SignIn({ onSignedIn }: { onSignedIn: (session: Session) => void }) {
@@ -39,7 +43,7 @@ function SignIn({ onSignedIn }: { onSignedIn: (session: Session) => void }) {
 
   return (
     <form className="card" onSubmit={submit}>
-      <h1>CareFlow</h1>
+      <h2>Patient sign-in</h2>
       <label>
         Patient
         <select value={patientId} onChange={(event) => setPatientId(event.target.value)}>
@@ -58,6 +62,28 @@ function SignIn({ onSignedIn }: { onSignedIn: (session: Session) => void }) {
   );
 }
 
+function CoordinatorSignIn({ onSignedIn }: { onSignedIn: (token: string) => void }) {
+  const [token, setToken] = useState("");
+
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    if (token.trim()) onSignedIn(token.trim());
+  }
+
+  return (
+    <form className="card" onSubmit={submit}>
+      <h2>Coordinator sign-in</h2>
+      <label>
+        Coordinator token
+        <input type="password" value={token} onChange={(event) => setToken(event.target.value)} />
+      </label>
+      <button type="submit" disabled={!token.trim()}>
+        Open console
+      </button>
+    </form>
+  );
+}
+
 function Chat({ session }: { session: Session }) {
   const [conversationId, setConversationId] = useState("");
   const [lines, setLines] = useState<ChatLine[]>([]);
@@ -66,11 +92,23 @@ function Chat({ session }: { session: Session }) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
 
-  function showReply(result: Reply) {
-    if (result.reply) {
-      setLines((current) => [...current, { role: "assistant", text: result.reply }]);
-    }
+  const reload = useCallback(
+    async (id: string) => {
+      const messages = await listMessages(session.token, id);
+      setLines(messages.map((message) => ({ role: message.role as ChatLine["role"], text: message.content })));
+    },
+    [session.token],
+  );
+
+  useEffect(() => {
+    if (!conversationId || waiting) return;
+    const timer = window.setInterval(() => reload(conversationId).catch(() => undefined), CHAT_POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [conversationId, waiting, reload]);
+
+  async function showReply(id: string, result: Reply) {
     setPending(result.confirmation !== null);
+    await reload(id);
   }
 
   async function startNew() {
@@ -90,7 +128,7 @@ function Chat({ session }: { session: Session }) {
     setError("");
     setLines((current) => [...current, { role: "patient", text: approved ? "Yes" : "No" }]);
     try {
-      showReply(await confirmChange(session.token, conversationId, approved));
+      await showReply(conversationId, await confirmChange(session.token, conversationId, approved));
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -109,7 +147,7 @@ function Chat({ session }: { session: Session }) {
     try {
       const id = conversationId || (await createConversation(session.token)).conversation_id;
       setConversationId(id);
-      showReply(await sendMessage(session.token, id, message));
+      await showReply(id, await sendMessage(session.token, id, message));
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -161,5 +199,14 @@ function Chat({ session }: { session: Session }) {
 
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
-  return session ? <Chat session={session} /> : <SignIn onSignedIn={setSession} />;
+  const [coordinatorToken, setCoordinatorToken] = useState("");
+  if (session) return <Chat session={session} />;
+  if (coordinatorToken) return <Coordinator token={coordinatorToken} />;
+  return (
+    <div className="stack">
+      <h1>CareFlow</h1>
+      <SignIn onSignedIn={setSession} />
+      <CoordinatorSignIn onSignedIn={setCoordinatorToken} />
+    </div>
+  );
 }

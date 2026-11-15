@@ -179,6 +179,7 @@ def confirm(
     thread_id = repository.pending_confirmation(conn, conversation_id)
     if thread_id is None:
         raise HTTPException(status_code=409, detail="nothing to confirm")
+    repository.insert_message(conn, conversation_id, "patient", "Yes" if body.approved else "No")
     return reply_from(resume_run(deps, checkpointer, thread_id, "confirmation", body.approved))
 
 

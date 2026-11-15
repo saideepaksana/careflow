@@ -3,23 +3,24 @@ from careflow.agents.scheduler import SchedulingPlan
 from careflow.agents.tools import idempotency_key
 from careflow.db import repository
 from careflow.db.connection import Connection
+from careflow.mcp_servers.client import McpTools
 from careflow.safety.verifier import VerdictKind, verify_plan
 
 
-def write_plan(conn: Connection, patient_id: str, plan: SchedulingPlan, key: str) -> dict:
+def write_plan(tools: McpTools, plan: SchedulingPlan, key: str) -> dict:
     if plan.action == AppointmentAction.book:
-        return repository.book_appointment(
-            conn, patient_id, plan.slot_id, plan.care_plan_item_id, key
-        )
+        args = {"slot_id": plan.slot_id, "care_plan_item_id": plan.care_plan_item_id}
+        return tools.act("book_appointment", {**args, "idempotency_key": key})
     if plan.action == AppointmentAction.reschedule:
-        return repository.reschedule_appointment(
-            conn, patient_id, plan.appointment_id, plan.slot_id, key
-        )
-    return repository.cancel_appointment(conn, patient_id, plan.appointment_id, key)
+        args = {"appointment_id": plan.appointment_id, "new_slot_id": plan.slot_id}
+        return tools.act("reschedule_appointment", {**args, "idempotency_key": key})
+    args = {"appointment_id": plan.appointment_id, "idempotency_key": key}
+    return tools.act("cancel_appointment", args)
 
 
 def execute_plan(
     conn: Connection,
+    tools: McpTools,
     patient_id: str,
     thread_id: str,
     plan: SchedulingPlan,
@@ -36,12 +37,11 @@ def execute_plan(
     )
     if not allowed:
         return {"ok": False, "error": verdict.reason}
-    return write_plan(conn, patient_id, plan, key)
+    return write_plan(tools, plan, key)
 
 
 def create_task(
-    conn: Connection,
-    patient_id: str,
+    tools: McpTools,
     key: str,
     kind: str,
     priority: str,
@@ -49,10 +49,11 @@ def create_task(
     detail: str,
     thread_id: str | None,
 ) -> dict:
-    return repository.create_coordinator_task(
-        conn, patient_id, priority, title, detail, key, kind, thread_id
+    args = {"priority": priority, "title": title, "detail": detail, "kind": kind}
+    return tools.act(
+        "create_coordinator_task", {**args, "idempotency_key": key, "thread_id": thread_id}
     )
 
 
-def resolve_task(conn: Connection, task_id: int, note: str) -> None:
-    repository.resolve_task(conn, task_id, note)
+def resolve_task(tools: McpTools, task_id: int, note: str) -> dict:
+    return tools.act("resolve_task", {"task_id": task_id, "note": note})

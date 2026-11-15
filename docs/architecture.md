@@ -43,12 +43,16 @@ LangGraph checkpoints the workflow state in PostgreSQL after every node. Each pa
 These rules must hold throughout the project. Tests enforce them.
 
 1. Raw patient text reaches only the intake agent, and the intake agent has no tools.
-2. Only the executor calls write tools, and every write carries an idempotency key. Appointment changes follow patient confirmation, plus coordinator approval when they fall outside the care plan. Coordinator tasks (escalations and hand-offs) are created without confirmation.
+2. Only the executor calls write tools (the `actions` MCP server), and every write carries an idempotency key. The single-agent baseline used for comparison is the only other caller. Appointment changes follow patient confirmation, plus coordinator approval when they fall outside the care plan. Coordinator tasks (escalations and hand-offs) are created without confirmation.
 3. The patient id for every tool call comes from the authenticated session, never from model output.
 4. A safety-gate escalation cannot be overruled downstream. Emergency replies are fixed templates.
 5. Every clinical statement in a reply cites a retrieved chunk from the patient's current documents or the shared protocols. If it cannot, the question is handed off.
 6. Clinical facts (medications, allergies, diagnoses) come only from the record and are never stored as memory. If a patient reports a clinical change in chat, CareFlow creates a coordinator task.
 7. Every loop has a hard cap: repair, replan and supervisor routing.
+
+## Tools
+
+Agents reach patient data, documents and write tools only through three MCP servers: `records` (read-only), `knowledge` (search) and `actions` (keyed writes). Each server is built per request and bound to the session's patient, so no tool takes a patient id. Deterministic safety code (safety gate, verifier, executor checks) reads the database directly so that it does not depend on the tool layer.
 
 ## Data model
 

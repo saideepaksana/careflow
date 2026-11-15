@@ -507,9 +507,11 @@ def booked_appointment_for_item(
 
 def list_open_tasks(conn: psycopg.Connection) -> list[dict]:
     return conn.execute(
-        "SELECT id, patient_id, kind, priority, title, detail, thread_id, created_at"
-        " FROM coordinator_tasks WHERE status = 'open'"
-        " ORDER BY array_position(ARRAY['emergency', 'urgent', 'routine'], priority), created_at"
+        "SELECT t.id, t.patient_id, p.name AS patient_name, t.kind, t.priority, t.title,"
+        " t.detail, t.thread_id, t.created_at"
+        " FROM coordinator_tasks t JOIN patients p ON p.id = t.patient_id WHERE t.status = 'open'"
+        " ORDER BY array_position(ARRAY['emergency', 'urgent', 'routine'], t.priority),"
+        " t.created_at, t.id"
     ).fetchall()
 
 
@@ -529,3 +531,78 @@ def resolve_task(conn: psycopg.Connection, task_id: int, note: str) -> None:
         " WHERE id = %s AND status = 'open'",
         (note, task_id),
     )
+
+
+def get_warning_signs(conn: psycopg.Connection, patient_id: str) -> list[dict]:
+    return conn.execute(
+        "SELECT i.id, i.description, i.severity, i.rule FROM care_plan_items i"
+        " JOIN care_plans p ON p.id = i.care_plan_id"
+        " WHERE p.patient_id = %s AND p.status = 'published' AND i.kind = 'warning_sign'"
+        " ORDER BY i.id",
+        (patient_id,),
+    ).fetchall()
+
+
+def thread_patient(conn: psycopg.Connection, thread_id: str) -> str | None:
+    row = conn.execute(
+        "SELECT c.patient_id FROM workflow_runs r JOIN conversations c ON c.id = r.conversation_id"
+        " WHERE r.thread_id = %s",
+        (thread_id,),
+    ).fetchone()
+    return row["patient_id"] if row else None
+
+
+def list_patient_overview(conn: psycopg.Connection) -> list[dict]:
+    return conn.execute(
+        "SELECT p.id, p.name, e.primary_diagnosis AS diagnosis,"
+        " (SELECT count(*) FROM coordinator_tasks t"
+        "  WHERE t.patient_id = p.id AND t.status = 'open') AS open_tasks"
+        " FROM patients p LEFT JOIN encounters e ON e.patient_id = p.id ORDER BY p.id"
+    ).fetchall()
+
+
+TIMELINE_QUERY = """
+SELECT * FROM (
+  SELECT m.created_at AS at, 'message' AS kind, m.content AS text,
+         jsonb_build_object('role', m.role) AS detail, m.id AS seq
+  FROM messages m JOIN conversations c ON c.id = m.conversation_id WHERE c.patient_id = %(p)s
+  UNION ALL
+  SELECT t.created_at, 'task_created', t.title,
+         jsonb_build_object('priority', t.priority, 'task_kind', t.kind, 'task_id', t.id), t.id
+  FROM coordinator_tasks t WHERE t.patient_id = %(p)s
+  UNION ALL
+  SELECT t.resolved_at, 'task_resolved', t.title,
+         jsonb_build_object('note', t.detail->>'resolution', 'task_id', t.id), t.id
+  FROM coordinator_tasks t WHERE t.patient_id = %(p)s AND t.resolved_at IS NOT NULL
+  UNION ALL
+  SELECT a.created_at, 'action', a.action, a.result, 0
+  FROM action_results a WHERE a.patient_id = %(p)s AND a.action <> 'create_coordinator_task'
+  UNION ALL
+  SELECT mem.created_at, 'memory', mem.content,
+         jsonb_build_object('type', mem.type, 'key', mem.key,
+                            'superseded', mem.superseded_by IS NOT NULL), mem.id
+  FROM memories mem WHERE mem.patient_id = %(p)s
+) events ORDER BY at DESC, kind, seq DESC LIMIT %(limit)s
+"""
+
+
+def patient_timeline(conn: psycopg.Connection, patient_id: str, limit: int) -> list[dict]:
+    rows = conn.execute(TIMELINE_QUERY, {"p": patient_id, "limit": limit}).fetchall()
+    return [{key: row[key] for key in ("at", "kind", "text", "detail")} for row in rows]
+
+
+def plan_progress_rows(conn: psycopg.Connection, patient_id: str) -> list[dict]:
+    return conn.execute(
+        "SELECT i.id, i.kind, i.description, i.specialty,"
+        " p.published_on + i.due_within_days AS due_date,"
+        " (SELECT a.id FROM appointments a JOIN slots s ON s.id = a.slot_id"
+        "  WHERE a.care_plan_item_id = i.id AND a.status = 'booked'"
+        "  ORDER BY s.starts_at LIMIT 1) AS appointment_id,"
+        " (SELECT s.starts_at FROM appointments a JOIN slots s ON s.id = a.slot_id"
+        "  WHERE a.care_plan_item_id = i.id AND a.status = 'booked'"
+        "  ORDER BY s.starts_at LIMIT 1) AS starts_at"
+        " FROM care_plan_items i JOIN care_plans p ON p.id = i.care_plan_id"
+        " WHERE p.patient_id = %s AND p.status = 'published' AND i.kind IN ('follow_up', 'lab')"
+        " ORDER BY i.id",
+        (patient_id,),
+    ).fetchall()

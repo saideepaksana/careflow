@@ -24,6 +24,15 @@ def imported_modules(path: Path) -> set[str]:
     return names
 
 
+def imported_names(path: Path) -> set[str]:
+    return {
+        alias.name
+        for node in ast.walk(ast.parse(path.read_text()))
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+    }
+
+
 def modules_importing(prefix: str) -> set[str]:
     return {
         str(path.relative_to(SRC))
@@ -62,6 +71,13 @@ REPOSITORY_WRITES = (
     "cancel_appointment",
     "reschedule_appointment",
     "create_coordinator_task",
+    "resolve_task",
+)
+TOOL_BACKED_READS = (
+    "list_appointments",
+    "find_free_slots",
+    "get_current_care_plan",
+    "get_plan_item",
 )
 
 
@@ -80,13 +96,56 @@ def test_tool_args_never_take_patient_id(spec: ToolSpec) -> None:
     assert "patient_id" not in spec.args_model.model_fields
 
 
-def test_repository_writes_only_called_from_tools() -> None:
-    callers = {
+def callers_of(names: tuple[str, ...]) -> dict[str, set[str]]:
+    return {
+        str(path.relative_to(SRC)): repository_calls(path) & set(names)
+        for path in SRC.rglob("*.py")
+        if path.parent.name != "db" and repository_calls(path) & set(names)
+    }
+
+
+def test_repository_writes_only_called_from_actions_server() -> None:
+    assert callers_of(REPOSITORY_WRITES) == {
+        "mcp_servers/actions.py": set(REPOSITORY_WRITES),
+        "api/coordinator.py": {"resolve_task"},
+    }
+
+
+@pytest.mark.parametrize("path", ["graph/nodes.py", "graph/executor.py", "agents/tools.py"])
+def test_agents_read_tool_data_through_mcp(path: str) -> None:
+    assert not repository_calls(SRC / path) & set(TOOL_BACKED_READS)
+    assert "retrieve" not in imported_names(SRC / path)
+
+
+def method_calls(path: Path, name: str) -> int:
+    return sum(
+        1
+        for node in ast.walk(ast.parse(path.read_text()))
+        if isinstance(node, ast.Call) and getattr(node.func, "attr", None) == name
+    )
+
+
+def test_only_executor_and_baseline_call_write_tools() -> None:
+    callers = {str(p.relative_to(SRC)) for p in SRC.rglob("*.py") if method_calls(p, "act")}
+    assert callers == {"graph/executor.py", "agents/tools.py"}
+
+
+def test_server_modules_only_imported_by_client() -> None:
+    servers = (
+        "careflow.mcp_servers.records",
+        "careflow.mcp_servers.knowledge",
+        "careflow.mcp_servers.actions",
+    )
+    importers = {
         str(path.relative_to(SRC))
         for path in SRC.rglob("*.py")
-        if path.parent.name != "db" and repository_calls(path) & set(REPOSITORY_WRITES)
+        if path.parent.name != "mcp_servers" and imported_modules(path) & set(servers)
     }
-    assert callers == {"agents/tools.py", "graph/executor.py"}
+    assert importers == set()
+
+
+def test_mcp_package_only_in_mcp_servers() -> None:
+    assert all(path.startswith("mcp_servers/") for path in modules_importing("mcp"))
 
 
 def test_fastembed_only_in_model_modules() -> None:

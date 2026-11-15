@@ -1,6 +1,5 @@
 import hashlib
 import json
-from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 
@@ -16,10 +15,15 @@ from careflow.config import (
 from careflow.db import repository
 from careflow.db.connection import Connection
 from careflow.knowledge.rerank import Reranker
-from careflow.knowledge.search import retrieve
+from careflow.mcp_servers.client import McpTools
 from careflow.memory.embeddings import Embedder
 
 AUDIT_ACTOR = "baseline_agent"
+READ_TOOLS = {
+    "get_care_plan": "get_care_plan",
+    "list_appointments": "list_appointments",
+    "find_slots": "find_free_slots",
+}
 
 
 class NoArgs(BaseModel):
@@ -111,8 +115,7 @@ class PatientTools:
         self.conn = conn
         self.patient_id = patient_id
         self.conversation_id = conversation_id
-        self.embedder = embedder
-        self.reranker = reranker
+        self.mcp = McpTools(conn, patient_id, embedder, reranker)
 
     def describe(self) -> str:
         lines = [
@@ -145,48 +148,21 @@ class PatientTools:
                 "error": "invalid_args",
                 "detail": str(error)[:TOOL_ERROR_MAX_CHARS],
             }
+        args_json = parsed.model_dump(mode="json")
         if spec.write:
             key = idempotency_key(self.conversation_id, name, parsed)
-            return self.write_handlers()[name](parsed, key)
-        data = self.read_handlers()[name](parsed)
-        return {"ok": True, "data": to_json_safe(data)}
-
-    def read_handlers(self) -> dict[str, Callable[[BaseModel], object]]:
-        conn, patient_id = self.conn, self.patient_id
-        return {
-            "get_care_plan": lambda _: repository.get_current_care_plan(conn, patient_id),
-            "list_appointments": lambda _: repository.list_appointments(conn, patient_id),
-            "find_slots": lambda a: repository.find_free_slots(
-                conn, a.specialty.value, a.start_date, a.end_date
-            ),
-            "search_documents": lambda a: self.search_documents(a.query),
-        }
+            return self.mcp.act(name, {**args_json, "idempotency_key": key})
+        if name == "search_documents":
+            return {"ok": True, "data": self.search_documents(parsed.query)}
+        return self.mcp.read_envelope(READ_TOOLS[name], args_json)
 
     def search_documents(self, query: str) -> list[dict]:
-        chunks = retrieve(self.conn, self.embedder, self.reranker, self.patient_id, query)
         return [
             {
-                "source": chunk.id,
-                "title": chunk.title,
-                "heading": chunk.heading,
-                "text": chunk.content[:RETRIEVAL_RESULT_MAX_CHARS],
+                "source": chunk["id"],
+                "title": chunk["title"],
+                "heading": chunk["heading"],
+                "text": chunk["content"][:RETRIEVAL_RESULT_MAX_CHARS],
             }
-            for chunk in chunks
+            for chunk in self.mcp.search(query)
         ]
-
-    def write_handlers(self) -> dict[str, Callable[[BaseModel, str], dict]]:
-        conn, patient_id = self.conn, self.patient_id
-        return {
-            "book_appointment": lambda a, key: repository.book_appointment(
-                conn, patient_id, a.slot_id, a.care_plan_item_id, key
-            ),
-            "reschedule_appointment": lambda a, key: repository.reschedule_appointment(
-                conn, patient_id, a.appointment_id, a.new_slot_id, key
-            ),
-            "cancel_appointment": lambda a, key: repository.cancel_appointment(
-                conn, patient_id, a.appointment_id, key
-            ),
-            "create_coordinator_task": lambda a, key: repository.create_coordinator_task(
-                conn, patient_id, a.priority.value, a.title, a.detail, key
-            ),
-        }

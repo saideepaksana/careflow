@@ -189,3 +189,12 @@ def test_supervisor_steps_are_capped(
     ).fetchone()["detail"]
     assert detail["outcome"][-1] == "cap:1"
     assert flow.llm.calls.count("careplan") == 1
+
+
+def test_part_of_day_picks_a_matching_slot(workflow_conn: psycopg.Connection) -> None:
+    script = book_lab("2026-11-03")
+    script["planner"] = planner_reply(
+        "book", "2026-11-03", care_plan_item_id="CP001-v2-02", part_of_day="afternoon"
+    )
+    waiting = Flow(workflow_conn, script).start("Book my blood test tomorrow afternoon")
+    assert "at 14:00" in waiting.confirmation
