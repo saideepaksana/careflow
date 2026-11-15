@@ -1,0 +1,13 @@
+{
+  "cases": 8,
+  "summary_fact_survival": 0.9259259259259259,
+  "semantic_fact_recall": 0.9333333333333333,
+  "blocked_by_guard": 1,
+  "lost_summary_facts": [
+    "copd-contact-s3",
+    "changed-preference-s2"
+  ],
+  "missed_semantic_facts": [
+    "hip-clinician:preferred_clinician"
+  ]
+}

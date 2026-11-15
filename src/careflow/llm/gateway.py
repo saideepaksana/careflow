@@ -9,6 +9,8 @@ from careflow.llm.reliability import CircuitBreaker, CircuitOpenError, call_with
 
 T = TypeVar("T", bound=BaseModel)
 
+litellm.suppress_debug_info = True
+
 TRANSIENT_ERRORS = (
     litellm.RateLimitError,
     litellm.APIConnectionError,

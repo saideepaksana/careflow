@@ -235,3 +235,79 @@ def insert_message(conn: psycopg.Connection, conversation_id: str, role: str, co
         "INSERT INTO messages (conversation_id, role, content) VALUES (%s, %s, %s)",
         (conversation_id, role, content),
     )
+
+
+def to_vector_literal(embedding: list[float]) -> str:
+    return "[" + ",".join(f"{value:.6f}" for value in embedding) + "]"
+
+
+def get_conversation_state(conn: psycopg.Connection, conversation_id: str) -> dict:
+    return conn.execute(
+        "SELECT summary, summarized_through, ended_at FROM conversations WHERE id = %s",
+        (conversation_id,),
+    ).fetchone()
+
+
+def list_messages_after(
+    conn: psycopg.Connection, conversation_id: str, message_id: int
+) -> list[dict]:
+    return conn.execute(
+        "SELECT id, role, content FROM messages WHERE conversation_id = %s AND id > %s ORDER BY id",
+        (conversation_id, message_id),
+    ).fetchall()
+
+
+def save_summary(
+    conn: psycopg.Connection, conversation_id: str, summary: str, summarized_through: int
+) -> None:
+    conn.execute(
+        "UPDATE conversations SET summary = %s, summarized_through = %s WHERE id = %s",
+        (summary, summarized_through, conversation_id),
+    )
+
+
+def end_conversation(conn: psycopg.Connection, conversation_id: str) -> bool:
+    row = conn.execute(
+        "UPDATE conversations SET ended_at = now() WHERE id = %s AND ended_at IS NULL RETURNING id",
+        (conversation_id,),
+    ).fetchone()
+    return row is not None
+
+
+def insert_memory(
+    conn: psycopg.Connection,
+    patient_id: str,
+    memory_type: str,
+    key: str | None,
+    content: str,
+    conversation_id: str,
+    embedding: list[float],
+) -> int:
+    row = conn.execute(
+        "INSERT INTO memories (patient_id, type, key, content, source_conversation_id,"
+        " embedding) VALUES (%s, %s, %s, %s, %s, %s::vector) RETURNING id",
+        (patient_id, memory_type, key, content, conversation_id, to_vector_literal(embedding)),
+    ).fetchone()
+    return row["id"]
+
+
+def active_semantic_memories(conn: psycopg.Connection, patient_id: str) -> list[dict]:
+    return conn.execute(
+        "SELECT id, key, content FROM memories WHERE patient_id = %s AND type = 'semantic'"
+        " AND superseded_by IS NULL ORDER BY key",
+        (patient_id,),
+    ).fetchall()
+
+
+def supersede_memory(conn: psycopg.Connection, old_id: int, new_id: int) -> None:
+    conn.execute("UPDATE memories SET superseded_by = %s WHERE id = %s", (new_id, old_id))
+
+
+def nearest_episodes(
+    conn: psycopg.Connection, patient_id: str, embedding: list[float], limit: int
+) -> list[dict]:
+    return conn.execute(
+        "SELECT content, created_at FROM memories WHERE patient_id = %s AND type = 'episodic'"
+        " ORDER BY embedding <=> %s::vector LIMIT %s",
+        (patient_id, to_vector_literal(embedding), limit),
+    ).fetchall()

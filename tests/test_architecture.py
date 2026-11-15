@@ -4,6 +4,8 @@ from pathlib import Path
 import pytest
 
 from careflow.agents.tools import TOOLS, ToolSpec
+from careflow.memory.manager import SemanticKey
+from careflow.safety.memory_guard import is_clinical
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "careflow"
 INTAKE_FORBIDDEN = ("careflow.db", "careflow.mcp_servers", "careflow.knowledge", "careflow.memory")
@@ -83,3 +85,12 @@ def test_repository_writes_only_called_from_tools() -> None:
         if path.parent.name != "db" and repository_calls(path) & set(REPOSITORY_WRITES)
     }
     assert callers == {"agents/tools.py"}
+
+
+def test_fastembed_only_in_embeddings_module() -> None:
+    assert modules_importing("fastembed") == {"memory/embeddings.py"}
+
+
+@pytest.mark.parametrize("key", list(SemanticKey))
+def test_semantic_keys_are_not_clinical(key: SemanticKey) -> None:
+    assert not is_clinical(key.value.replace("_", " "))

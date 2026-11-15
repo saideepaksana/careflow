@@ -304,7 +304,7 @@ PostgreSQL is the single store for relational data, vectors and workflow checkpo
 \begin{itemize}
     \item \textbf{Clinical (synthetic, FHIR-like):} \texttt{patients}, \texttt{encounters} (admission and discharge), \texttt{care\_plans} (versioned, immutable once published), and \linebreak[2]\texttt{care\_plan\_items} (follow-up, lab, medication, warning sign with severity, activity rule; due date and status).
     \item \textbf{Scheduling:} \texttt{clinicians}, \texttt{slots}, \texttt{appointments} linked to the care-plan item they fulfil. A partial unique index allows only one active booking per slot, and idempotency keys are unique.
-    \item \textbf{Interaction history:} \texttt{conversations} (one LangGraph thread each), \texttt{messages}, \texttt{memories} (type, content, source message, \texttt{superseded\_by}).
+    \item \textbf{Interaction history:} \texttt{conversations} (one LangGraph thread each), \texttt{messages}, \texttt{memories} (type, key, content, source conversation, embedding, \texttt{superseded\_by}).
     \item \textbf{Knowledge:} \texttt{documents} (owner patient or shared, type, version, effective dates) and \texttt{chunks} (section id, text, \texttt{tsvector}, \texttt{vector} embedding).
     \item \textbf{Operations:} \texttt{coordinator\_tasks} (kind, priority, status, assignee, payload), append-only \texttt{audit\_events} (actor, action, clause or rule ids, \texttt{trace\_id}), and LangGraph checkpoint tables.
 \end{itemize}

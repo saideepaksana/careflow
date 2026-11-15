@@ -27,3 +27,6 @@ export const sendMessage = (token: string, conversationId: string, text: string)
     { method: "POST", body: JSON.stringify({ text }) },
     token,
   );
+
+export const endConversation = (token: string, conversationId: string) =>
+  request<unknown>(`/conversations/${conversationId}/end`, { method: "POST" }, token);

@@ -6,13 +6,20 @@ from fastapi.testclient import TestClient
 from careflow.api.app import create_app
 from careflow.config import Settings
 from careflow.llm.gateway import FakeLLM
+from careflow.memory.embeddings import FakeEmbedder
 
 
 @pytest.fixture
 def client(seeded_db_url: str) -> TestClient:
-    llm = FakeLLM([json.dumps({"action": "reply", "reply": "Your visit is on Wednesday."})])
+    llm = FakeLLM(
+        [
+            json.dumps({"action": "reply", "reply": "Your visit is on Wednesday."}),
+            json.dumps({"episode": "Asked when the visit is.", "facts": []}),
+        ]
+    )
     app = create_app(llm)
     app.state.settings = Settings(database_url=seeded_db_url)
+    app.state.embedder = FakeEmbedder()
     return TestClient(app)
 
 
@@ -53,3 +60,33 @@ def test_message_gets_reply_and_is_stored(client: TestClient) -> None:
         ("patient", "When is my visit?"),
         ("assistant", "Your visit is on Wednesday."),
     ]
+
+
+def chat_once(client: TestClient) -> tuple[dict, str]:
+    headers = sign_in(client, "P001")
+    conversation_id = new_conversation(client, headers)
+    path = f"/api/conversations/{conversation_id}/messages"
+    client.post(path, json={"text": "When is my visit?"}, headers=headers)
+    return headers, conversation_id
+
+
+def test_ending_writes_an_episode(client: TestClient) -> None:
+    headers, conversation_id = chat_once(client)
+    response = client.post(f"/api/conversations/{conversation_id}/end", headers=headers)
+    assert response.status_code == 200
+    assert response.json()["episode_id"] > 0
+
+
+@pytest.mark.parametrize(
+    ("method", "suffix", "body"),
+    [("post", "end", None), ("post", "messages", {"text": "hello again"})],
+)
+def test_ended_conversation_rejects_more(
+    client: TestClient, method: str, suffix: str, body: dict | None
+) -> None:
+    headers, conversation_id = chat_once(client)
+    client.post(f"/api/conversations/{conversation_id}/end", headers=headers)
+    response = client.request(
+        method, f"/api/conversations/{conversation_id}/{suffix}", json=body, headers=headers
+    )
+    assert response.status_code == 409

@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import {
   createConversation,
+  endConversation,
   listPatients,
   login,
   Patient,
@@ -62,7 +63,12 @@ function Chat({ session }: { session: Session }) {
   const [waiting, setWaiting] = useState(false);
   const [error, setError] = useState("");
 
-  function startNew() {
+  async function startNew() {
+    if (conversationId) {
+      setWaiting(true);
+      await endConversation(session.token, conversationId).catch(() => undefined);
+      setWaiting(false);
+    }
     setConversationId("");
     setLines([]);
     setError("");

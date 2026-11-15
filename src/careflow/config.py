@@ -16,7 +16,6 @@ SLOT_DAYS_AHEAD = 21
 SLOT_TIMES = ("09:00", "10:00", "11:00", "14:00")
 SLOT_MINUTES = 30
 AGENT_MAX_STEPS = 8
-AGENT_HISTORY_TURNS = 10
 THOUGHT_MAX_CHARS = 300
 FREE_SLOTS_LIMIT = 10
 TASK_TITLE_MAX_CHARS = 120
@@ -31,6 +30,50 @@ BREAKER_COOLDOWN_SECONDS = 30
 MESSAGE_MAX_CHARS = 2000
 SESSION_TOKEN_BYTES = 32
 EVAL_CASE_INTERVAL_SECONDS = 10
+MEMORY_EVAL_CASE_INTERVAL_SECONDS = 35
+EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
+EMBEDDING_DIM = 384
+MODEL_CACHE_DIR = PROJECT_ROOT / "data" / "models"
+CHARS_PER_TOKEN = 4
+WORKING_TOKEN_BUDGET = 1500
+WORKING_KEEP_TURNS = 4
+SESSION_SUMMARY_MAX_CHARS = 1200
+KEY_FACTS_MAX = 12
+EPISODE_MAX_CHARS = 400
+MEMORY_VALUE_MAX_CHARS = 200
+RECALL_EPISODES = 3
+CLINICAL_TERMS = (
+    "mg",
+    "dose",
+    "dosage",
+    "tablet",
+    "pill",
+    "medic",
+    "drug",
+    "insulin",
+    "inhaler",
+    "allerg",
+    "diagnos",
+    "symptom",
+    "pain",
+    "fever",
+    "temperature",
+    "swell",
+    "breath",
+    "weight",
+    "glucose",
+    "sugar",
+    "blood pressure",
+    "oxygen",
+    "heart rate",
+    "wound",
+    "bleed",
+    "dizz",
+    "faint",
+    "nause",
+    "vomit",
+    "surgery",
+)
 
 
 @dataclass(frozen=True)

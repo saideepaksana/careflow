@@ -56,7 +56,7 @@ PostgreSQL with pgvector is the single store.
 
 - Clinical (synthetic, FHIR-like): `patients`, `encounters`, `care_plans` (versioned, immutable once published), `care_plan_items` (follow-up, lab, medication, warning sign with severity, activity rule).
 - Scheduling: `clinicians`, `slots`, `appointments` (linked to the care-plan item they fulfil). There is one active booking per slot, and idempotency keys are unique.
-- Interaction history: `conversations` (one LangGraph thread each), `messages`, `memories` (type, source message, `superseded_by`).
+- Interaction history: `conversations` (one LangGraph thread each), `messages`, `memories` (type, key, content, source conversation, embedding, `superseded_by`).
 - Knowledge: `documents` (owner or shared, version, effective dates) and `chunks` (section id, `tsvector`, embedding).
 - Operations: `coordinator_tasks`, append-only `audit_events` with `trace_id`, and the LangGraph checkpoint tables.
 

@@ -11,7 +11,7 @@ from careflow.agents.baseline_prompt import (
 )
 from careflow.agents.intake import Turn
 from careflow.agents.tools import PatientTools
-from careflow.config import AGENT_HISTORY_TURNS, AGENT_MAX_STEPS, THOUGHT_MAX_CHARS
+from careflow.config import AGENT_MAX_STEPS, THOUGHT_MAX_CHARS
 from careflow.llm.gateway import LLM, LLMOutputError, LLMUnavailableError, complete_structured
 
 StopReason = Literal["replied", "max_steps", "invalid_output", "llm_unavailable"]
@@ -30,16 +30,25 @@ class AgentStep(BaseModel):
         return value[:THOUGHT_MAX_CHARS] if isinstance(value, str) else value
 
 
+class AgentContext(BaseModel):
+    summary: str = ""
+    recent: list[Turn] = []
+    memories: list[str] = []
+
+
 class AgentResult(BaseModel):
     reply: str
     stop_reason: StopReason
     tool_calls: list[dict]
 
 
-def build_agent_prompt(message: str, history: list[Turn], steps: list[dict]) -> str:
-    turns = "\n".join(f"{turn.role}: {turn.text}" for turn in history[-AGENT_HISTORY_TURNS:])
+def build_agent_prompt(message: str, context: AgentContext, steps: list[dict]) -> str:
+    turns = "\n".join(f"{turn.role}: {turn.text}" for turn in context.recent)
+    memories = "\n".join(context.memories)
     return (
         f"Today is {clock.today().isoformat()}.\n"
+        f"<session_summary>\n{context.summary}\n</session_summary>\n"
+        f"<patient_memory>\n{memories}\n</patient_memory>\n"
         f"<conversation>\n{turns}\n</conversation>\n"
         f"<patient_message>\n{message}\n</patient_message>\n"
         f"Steps so far:\n{json.dumps(steps)}"
@@ -61,13 +70,13 @@ def next_step(llm: LLM, system: str, prompt: str) -> AgentStep | None:
 
 
 def run_baseline_agent(
-    llm: LLM, tools: PatientTools, message: str, history: list[Turn]
+    llm: LLM, tools: PatientTools, message: str, context: AgentContext
 ) -> AgentResult:
     system = BASELINE_SYSTEM_PROMPT + tools.describe()
     steps: list[dict] = []
     for _ in range(AGENT_MAX_STEPS):
         try:
-            step = next_step(llm, system, build_agent_prompt(message, history, steps))
+            step = next_step(llm, system, build_agent_prompt(message, context, steps))
         except LLMUnavailableError:
             return AgentResult(
                 reply=UNAVAILABLE_REPLY, stop_reason="llm_unavailable", tool_calls=steps
