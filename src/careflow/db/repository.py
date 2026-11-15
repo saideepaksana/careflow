@@ -38,7 +38,11 @@ def list_appointments(conn: psycopg.Connection, patient_id: str) -> list[dict]:
 
 
 def find_free_slots(
-    conn: psycopg.Connection, specialty: str, start_date: date, end_date: date
+    conn: psycopg.Connection,
+    specialty: str,
+    start_date: date,
+    end_date: date,
+    limit: int = FREE_SLOTS_LIMIT,
 ) -> list[dict]:
     return conn.execute(
         "SELECT s.id, s.starts_at, c.name AS clinician_name FROM slots s"
@@ -47,7 +51,7 @@ def find_free_slots(
         " AND NOT EXISTS (SELECT 1 FROM appointments a"
         " WHERE a.slot_id = s.id AND a.status = 'booked')"
         " ORDER BY s.starts_at, s.id LIMIT %s",
-        (specialty, CLINIC_TIMEZONE, start_date, end_date, FREE_SLOTS_LIMIT),
+        (specialty, CLINIC_TIMEZONE, start_date, end_date, limit),
     ).fetchall()
 
 
@@ -179,12 +183,23 @@ def create_coordinator_task(
     title: str,
     detail: str,
     idempotency_key: str,
+    kind: str = "handoff",
+    thread_id: str | None = None,
 ) -> dict:
     def work() -> dict:
         row = conn.execute(
             "INSERT INTO coordinator_tasks (patient_id, priority, status, title, detail,"
-            " idempotency_key) VALUES (%s, %s, 'open', %s, %s, %s) RETURNING id",
-            (patient_id, priority, title, Jsonb({"text": detail}), idempotency_key),
+            " idempotency_key, kind, thread_id) VALUES (%s, %s, 'open', %s, %s, %s, %s, %s)"
+            " RETURNING id",
+            (
+                patient_id,
+                priority,
+                title,
+                Jsonb({"text": detail}),
+                idempotency_key,
+                kind,
+                thread_id,
+            ),
         ).fetchone()
         return {"task_id": row["id"]}
 
@@ -230,10 +245,17 @@ def list_messages(conn: psycopg.Connection, conversation_id: str) -> list[dict]:
     ).fetchall()
 
 
-def insert_message(conn: psycopg.Connection, conversation_id: str, role: str, content: str) -> None:
+def insert_message(
+    conn: psycopg.Connection,
+    conversation_id: str,
+    role: str,
+    content: str,
+    idempotency_key: str | None = None,
+) -> None:
     conn.execute(
-        "INSERT INTO messages (conversation_id, role, content) VALUES (%s, %s, %s)",
-        (conversation_id, role, content),
+        "INSERT INTO messages (conversation_id, role, content, idempotency_key)"
+        " VALUES (%s, %s, %s, %s) ON CONFLICT (idempotency_key) DO NOTHING",
+        (conversation_id, role, content, idempotency_key),
     )
 
 
@@ -378,3 +400,132 @@ def chunk_status(conn: psycopg.Connection, chunk_ids: list[str]) -> dict[str, st
         (chunk_ids,),
     ).fetchall()
     return {row["id"]: row["status"] for row in rows}
+
+
+def create_workflow_run(conn: psycopg.Connection, thread_id: str, conversation_id: str) -> None:
+    conn.execute(
+        "INSERT INTO workflow_runs (thread_id, conversation_id, status) VALUES (%s, %s, 'running')",
+        (thread_id, conversation_id),
+    )
+
+
+def set_run_status(conn: psycopg.Connection, thread_id: str, status: str) -> None:
+    conn.execute(
+        "UPDATE workflow_runs SET status = %s, updated_at = now() WHERE thread_id = %s",
+        (status, thread_id),
+    )
+
+
+def get_run(conn: psycopg.Connection, thread_id: str) -> dict | None:
+    return conn.execute(
+        "SELECT thread_id, conversation_id, status FROM workflow_runs WHERE thread_id = %s",
+        (thread_id,),
+    ).fetchone()
+
+
+def pending_confirmation(conn: psycopg.Connection, conversation_id: str) -> str | None:
+    row = conn.execute(
+        "SELECT thread_id FROM workflow_runs"
+        " WHERE conversation_id = %s AND status = 'awaiting_confirmation'",
+        (conversation_id,),
+    ).fetchone()
+    return row["thread_id"] if row else None
+
+
+def runs_with_status(conn: psycopg.Connection, status: str) -> list[str]:
+    rows = conn.execute(
+        "SELECT thread_id FROM workflow_runs WHERE status = %s ORDER BY created_at", (status,)
+    ).fetchall()
+    return [row["thread_id"] for row in rows]
+
+
+def last_message_id(conn: psycopg.Connection, conversation_id: str) -> int:
+    row = conn.execute(
+        "SELECT coalesce(max(id), 0) AS id FROM messages WHERE conversation_id = %s",
+        (conversation_id,),
+    ).fetchone()
+    return row["id"]
+
+
+def assistant_messages_after(
+    conn: psycopg.Connection, conversation_id: str, message_id: int
+) -> list[str]:
+    rows = conn.execute(
+        "SELECT content FROM messages WHERE conversation_id = %s AND id > %s"
+        " AND role = 'assistant' ORDER BY id",
+        (conversation_id, message_id),
+    ).fetchall()
+    return [row["content"] for row in rows]
+
+
+def get_action_result(conn: psycopg.Connection, idempotency_key: str) -> dict | None:
+    row = conn.execute(
+        "SELECT result FROM action_results WHERE idempotency_key = %s", (idempotency_key,)
+    ).fetchone()
+    return {**row["result"], "replayed": True} if row else None
+
+
+def get_appointment(conn: psycopg.Connection, patient_id: str, appointment_id: str) -> dict | None:
+    return conn.execute(
+        "SELECT a.id, a.status, a.slot_id, a.care_plan_item_id, s.starts_at, c.specialty"
+        " FROM appointments a JOIN slots s ON s.id = a.slot_id"
+        " JOIN clinicians c ON c.id = s.clinician_id"
+        " WHERE a.id = %s AND a.patient_id = %s",
+        (appointment_id, patient_id),
+    ).fetchone()
+
+
+def get_slot(conn: psycopg.Connection, slot_id: str) -> dict | None:
+    return conn.execute(
+        "SELECT s.id, s.starts_at, c.name AS clinician_name, c.specialty,"
+        " EXISTS (SELECT 1 FROM appointments a WHERE a.slot_id = s.id AND a.status = 'booked')"
+        " AS booked FROM slots s JOIN clinicians c ON c.id = s.clinician_id WHERE s.id = %s",
+        (slot_id,),
+    ).fetchone()
+
+
+def get_plan_item(conn: psycopg.Connection, patient_id: str, item_id: str) -> dict | None:
+    return conn.execute(
+        "SELECT i.id, i.kind, i.description, i.specialty,"
+        " p.published_on + i.due_within_days AS due_date"
+        " FROM care_plan_items i JOIN care_plans p ON p.id = i.care_plan_id"
+        " WHERE i.id = %s AND p.patient_id = %s AND p.status = 'published'",
+        (item_id, patient_id),
+    ).fetchone()
+
+
+def booked_appointment_for_item(
+    conn: psycopg.Connection, patient_id: str, item_id: str
+) -> str | None:
+    row = conn.execute(
+        "SELECT id FROM appointments"
+        " WHERE patient_id = %s AND care_plan_item_id = %s AND status = 'booked'",
+        (patient_id, item_id),
+    ).fetchone()
+    return row["id"] if row else None
+
+
+def list_open_tasks(conn: psycopg.Connection) -> list[dict]:
+    return conn.execute(
+        "SELECT id, patient_id, kind, priority, title, detail, thread_id, created_at"
+        " FROM coordinator_tasks WHERE status = 'open'"
+        " ORDER BY array_position(ARRAY['emergency', 'urgent', 'routine'], priority), created_at"
+    ).fetchall()
+
+
+def get_task(conn: psycopg.Connection, task_id: int) -> dict | None:
+    return conn.execute(
+        "SELECT t.id, t.patient_id, t.kind, t.status, t.thread_id, r.conversation_id"
+        " FROM coordinator_tasks t LEFT JOIN workflow_runs r ON r.thread_id = t.thread_id"
+        " WHERE t.id = %s",
+        (task_id,),
+    ).fetchone()
+
+
+def resolve_task(conn: psycopg.Connection, task_id: int, note: str) -> None:
+    conn.execute(
+        "UPDATE coordinator_tasks SET status = 'resolved', resolved_at = now(),"
+        " detail = detail || jsonb_build_object('resolution', %s::text)"
+        " WHERE id = %s AND status = 'open'",
+        (note, task_id),
+    )

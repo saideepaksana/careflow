@@ -3,9 +3,11 @@ import json
 import psycopg
 import pytest
 
-from careflow.config import load_settings
+from careflow.config import CORPUS_DIR, load_settings
 from careflow.db.connection import connect
 from careflow.db.seed import seed
+from careflow.knowledge.corpus import ingest_corpus
+from careflow.memory.embeddings import FakeEmbedder
 
 RUNNING_EXAMPLE = {
     "items": [
@@ -32,15 +34,35 @@ def running_example_reply() -> str:
     return json.dumps(RUNNING_EXAMPLE)
 
 
-@pytest.fixture(scope="module")
-def seeded_db_url() -> str:
+def reachable_test_db_url() -> str:
     url = load_settings().test_database_url
     try:
         connect(url).close()
     except psycopg.OperationalError:
         pytest.skip("test database is not reachable")
+    return url
+
+
+@pytest.fixture(scope="module")
+def seeded_db_url() -> str:
+    url = reachable_test_db_url()
     seed(url)
     return url
+
+
+@pytest.fixture
+def fresh_db_url() -> str:
+    url = reachable_test_db_url()
+    seed(url)
+    with connect(url, autocommit=True) as conn:
+        ingest_corpus(conn, FakeEmbedder(), CORPUS_DIR)
+    return url
+
+
+@pytest.fixture
+def workflow_conn(fresh_db_url: str):
+    with connect(fresh_db_url, autocommit=True) as conn:
+        yield conn
 
 
 @pytest.fixture

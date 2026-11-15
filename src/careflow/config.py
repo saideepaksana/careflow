@@ -52,6 +52,32 @@ EVAL_TOP_K = 5
 ANSWER_SENTENCES_MAX = 6
 ANSWER_SENTENCE_MAX_CHARS = 300
 RETRIEVAL_RESULT_MAX_CHARS = 600
+SUPERVISOR_MAX_STEPS = 8
+MAX_REPLANS = 2
+SLOT_SCAN_LIMIT = 200
+MORNING_END_HOUR = 12
+RED_FLAG_TERMS = (
+    "chest pain",
+    "chest tightness",
+    "can't breathe",
+    "cannot breathe",
+    "severe breathlessness",
+    "struggling to breathe",
+    "fainted",
+    "passed out",
+    "unconscious",
+    "blue lips",
+    "new confusion",
+    "suddenly confused",
+    "seizure",
+    "stroke",
+    "face drooping",
+    "coughing blood",
+    "coughing up blood",
+    "vomiting blood",
+    "suicid",
+    "kill myself",
+)
 CLINICAL_TERMS = (
     "mg",
     "dose",
@@ -95,6 +121,7 @@ class Settings:
     llm_temperature: float = 0
     database_url: str = ""
     test_database_url: str = ""
+    coordinator_token: str = ""
 
 
 def load_settings() -> Settings:
@@ -107,4 +134,5 @@ def load_settings() -> Settings:
         llm_temperature=float(os.getenv("LLM_TEMPERATURE") or 0),
         database_url=os.getenv("DATABASE_URL", ""),
         test_database_url=os.getenv("TEST_DATABASE_URL", ""),
+        coordinator_token=os.getenv("COORDINATOR_TOKEN", ""),
     )

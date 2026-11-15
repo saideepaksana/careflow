@@ -1,21 +1,18 @@
 import uuid
-from collections.abc import Iterator
 from datetime import datetime
-from typing import Annotated
 
-from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request
+from fastapi import APIRouter, FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from careflow.agents.baseline import AgentContext, StopReason, run_baseline_agent
 from careflow.agents.intake import Turn
-from careflow.agents.tools import PatientTools
+from careflow.api import coordinator
+from careflow.api.deps import Checkpoints, Db, Llm, Memory, PatientId, Workflow
 from careflow.api.sessions import SessionStore
 from careflow.config import MESSAGE_MAX_CHARS, load_settings
 from careflow.db import repository
-from careflow.db.connection import Connection, connect
-from careflow.knowledge.rerank import FastReranker, Reranker
-from careflow.llm.gateway import LLM, LLMOutputError, LLMUnavailableError, build_llm
-from careflow.memory.embeddings import Embedder, FastEmbedder
+from careflow.db.connection import Connection
+from careflow.graph.workflow import RunContext, RunResult, resume_run, start_run
+from careflow.llm.gateway import LLM, LLMOutputError, LLMUnavailableError
 from careflow.memory.manager import (
     MemoryWriteResult,
     digest_session,
@@ -62,50 +59,22 @@ class MessageIn(BaseModel):
     text: str = Field(min_length=1, max_length=MESSAGE_MAX_CHARS)
 
 
+class ConfirmIn(BaseModel):
+    approved: bool
+
+
 class ReplyOut(BaseModel):
     reply: str
-    stop_reason: StopReason
+    status: str
+    confirmation: str | None
 
 
-def get_conn(request: Request) -> Iterator[Connection]:
-    with connect(request.app.state.settings.database_url) as conn:
-        yield conn
-
-
-def get_llm(request: Request) -> LLM:
-    state = request.app.state
-    if state.llm is None:
-        state.llm = build_llm(state.settings)
-    return state.llm
-
-
-def get_embedder(request: Request) -> Embedder:
-    state = request.app.state
-    if state.embedder is None:
-        state.embedder = FastEmbedder()
-    return state.embedder
-
-
-def get_reranker(request: Request) -> Reranker:
-    state = request.app.state
-    if state.reranker is None:
-        state.reranker = FastReranker()
-    return state.reranker
-
-
-def current_patient(request: Request, authorization: Annotated[str, Header()] = "") -> str:
-    scheme, _, token = authorization.partition(" ")
-    patient_id = request.app.state.sessions.patient_for(token) if scheme == "Bearer" else None
-    if patient_id is None:
-        raise HTTPException(status_code=401, detail="not signed in")
-    return patient_id
-
-
-Db = Annotated[Connection, Depends(get_conn)]
-PatientId = Annotated[str, Depends(current_patient)]
-Llm = Annotated[LLM, Depends(get_llm)]
-Memory = Annotated[Embedder, Depends(get_embedder)]
-Ranker = Annotated[Reranker, Depends(get_reranker)]
+def reply_from(result: RunResult) -> ReplyOut:
+    return ReplyOut(
+        reply="\n\n".join(result.messages),
+        status=result.status,
+        confirmation=result.confirmation,
+    )
 
 
 def require_conversation(conn: Connection, conversation_id: str, patient_id: str) -> None:
@@ -180,20 +149,37 @@ def post_message(
     conn: Db,
     llm: Llm,
     embedder: Memory,
-    reranker: Ranker,
+    deps: Workflow,
+    checkpointer: Checkpoints,
 ) -> ReplyOut:
     require_conversation(conn, conversation_id, patient_id)
+    if repository.pending_confirmation(conn, conversation_id):
+        raise HTTPException(status_code=409, detail="please answer the pending confirmation")
     memory = refresh_working_memory(llm, conn, conversation_id)
     repository.insert_message(conn, conversation_id, "patient", body.text)
-    context = AgentContext(
+    context = RunContext(
         summary=render_summary(memory.summary),
         recent=memory.recent,
         memories=recall(conn, embedder, patient_id, body.text),
     )
-    tools = PatientTools(conn, patient_id, conversation_id, embedder, reranker)
-    result = run_baseline_agent(llm, tools, body.text, context)
-    repository.insert_message(conn, conversation_id, "assistant", result.reply)
-    return ReplyOut(reply=result.reply, stop_reason=result.stop_reason)
+    result = start_run(deps, checkpointer, conversation_id, patient_id, body.text, context)
+    return reply_from(result)
+
+
+@router.post("/conversations/{conversation_id}/confirm")
+def confirm(
+    conversation_id: str,
+    body: ConfirmIn,
+    patient_id: PatientId,
+    conn: Db,
+    deps: Workflow,
+    checkpointer: Checkpoints,
+) -> ReplyOut:
+    require_conversation(conn, conversation_id, patient_id)
+    thread_id = repository.pending_confirmation(conn, conversation_id)
+    if thread_id is None:
+        raise HTTPException(status_code=409, detail="nothing to confirm")
+    return reply_from(resume_run(deps, checkpointer, thread_id, "confirmation", body.approved))
 
 
 @router.post("/conversations/{conversation_id}/end")
@@ -220,7 +206,9 @@ def create_app(llm: LLM | None = None) -> FastAPI:
     app.state.llm = llm
     app.state.embedder = None
     app.state.reranker = None
+    app.state.checkpointer = None
     app.include_router(router)
+    app.include_router(coordinator.router)
     return app
 
 

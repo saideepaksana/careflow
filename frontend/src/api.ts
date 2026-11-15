@@ -1,6 +1,6 @@
 export type Patient = { id: string; name: string };
 export type Message = { role: string; content: string; created_at: string };
-export type Reply = { reply: string; stop_reason: string };
+export type Reply = { reply: string; status: string; confirmation: string | null };
 
 async function request<T>(path: string, init: RequestInit = {}, token = ""): Promise<T> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -30,3 +30,10 @@ export const sendMessage = (token: string, conversationId: string, text: string)
 
 export const endConversation = (token: string, conversationId: string) =>
   request<unknown>(`/conversations/${conversationId}/end`, { method: "POST" }, token);
+
+export const confirmChange = (token: string, conversationId: string, approved: boolean) =>
+  request<Reply>(
+    `/conversations/${conversationId}/confirm`,
+    { method: "POST", body: JSON.stringify({ approved }) },
+    token,
+  );

@@ -81,3 +81,9 @@ button {
   color: #b42318;
   margin: 0;
 }
+
+.confirm {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}

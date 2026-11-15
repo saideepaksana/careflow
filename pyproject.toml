@@ -9,6 +9,9 @@ requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115",
     "fastembed>=0.7",
+    "langgraph==1.2.19",
+    "langgraph-checkpoint==4.3.1",
+    "langgraph-checkpoint-postgres==3.2.0",
     "litellm==1.106.7",
     "psycopg[binary]>=3.2",
     "pydantic>=2",
@@ -25,6 +28,7 @@ where = ["src"]
 [tool.pytest.ini_options]
 pythonpath = ["src", "."]
 testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning:langsmith.*"]
 
 [tool.ruff]
 line-length = 100
@@ -39,4 +43,5 @@ max-complexity = 10
 "src/careflow/agents/intake_prompt.py" = ["E501"]
 "src/careflow/agents/baseline_prompt.py" = ["E501"]
 "src/careflow/agents/careplan_prompt.py" = ["E501"]
+"src/careflow/agents/scheduler_prompt.py" = ["E501"]
 "src/careflow/memory/prompts.py" = ["E501"]

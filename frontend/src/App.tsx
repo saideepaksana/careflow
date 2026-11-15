@@ -1,10 +1,12 @@
 import { FormEvent, useEffect, useState } from "react";
 import {
+  confirmChange,
   createConversation,
   endConversation,
   listPatients,
   login,
   Patient,
+  Reply,
   sendMessage,
 } from "./api";
 
@@ -61,7 +63,15 @@ function Chat({ session }: { session: Session }) {
   const [lines, setLines] = useState<ChatLine[]>([]);
   const [text, setText] = useState("");
   const [waiting, setWaiting] = useState(false);
+  const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
+
+  function showReply(result: Reply) {
+    if (result.reply) {
+      setLines((current) => [...current, { role: "assistant", text: result.reply }]);
+    }
+    setPending(result.confirmation !== null);
+  }
 
   async function startNew() {
     if (conversationId) {
@@ -71,7 +81,21 @@ function Chat({ session }: { session: Session }) {
     }
     setConversationId("");
     setLines([]);
+    setPending(false);
     setError("");
+  }
+
+  async function answer(approved: boolean) {
+    setWaiting(true);
+    setError("");
+    setLines((current) => [...current, { role: "patient", text: approved ? "Yes" : "No" }]);
+    try {
+      showReply(await confirmChange(session.token, conversationId, approved));
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setWaiting(false);
+    }
   }
 
   async function send(event: FormEvent) {
@@ -85,8 +109,7 @@ function Chat({ session }: { session: Session }) {
     try {
       const id = conversationId || (await createConversation(session.token)).conversation_id;
       setConversationId(id);
-      const result = await sendMessage(session.token, id, message);
-      setLines((current) => [...current, { role: "assistant", text: result.reply }]);
+      showReply(await sendMessage(session.token, id, message));
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -109,14 +132,25 @@ function Chat({ session }: { session: Session }) {
           </li>
         ))}
       </ul>
+      {pending && (
+        <div className="confirm">
+          <button type="button" onClick={() => answer(true)} disabled={waiting}>
+            Yes
+          </button>
+          <button type="button" onClick={() => answer(false)} disabled={waiting}>
+            No
+          </button>
+        </div>
+      )}
       <form onSubmit={send}>
         <input
           value={text}
           onChange={(event) => setText(event.target.value)}
           placeholder="Type a message"
           maxLength={2000}
+          disabled={pending}
         />
-        <button type="submit" disabled={waiting}>
+        <button type="submit" disabled={waiting || pending}>
           {waiting ? "Thinking..." : "Send"}
         </button>
       </form>

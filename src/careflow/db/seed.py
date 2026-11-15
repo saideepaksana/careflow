@@ -12,6 +12,7 @@ from careflow.config import (
     SLOT_TIMES,
     load_settings,
 )
+from careflow.db.checkpointer import setup_checkpointer
 from careflow.db.connection import connect, reset_schema
 
 ADMISSION_DAYS = 4
@@ -299,6 +300,7 @@ def seed(database_url: str) -> None:
         insert_care_plans(conn)
         insert_clinicians_and_slots(conn)
         insert_appointments(conn)
+    setup_checkpointer(database_url)
 
 
 if __name__ == "__main__":

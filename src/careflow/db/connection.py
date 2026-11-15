@@ -7,8 +7,8 @@ Connection = psycopg.Connection
 MIGRATIONS_DIR = Path(__file__).with_name("migrations")
 
 
-def connect(database_url: str) -> psycopg.Connection:
-    return psycopg.connect(database_url, row_factory=dict_row)
+def connect(database_url: str, autocommit: bool = False) -> psycopg.Connection:
+    return psycopg.connect(database_url, row_factory=dict_row, autocommit=autocommit)
 
 
 def create_schema(conn: psycopg.Connection) -> None:

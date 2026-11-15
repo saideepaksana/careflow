@@ -50,3 +50,24 @@ def test_only_one_published_plan_per_patient(db: psycopg.Connection) -> None:
             "INSERT INTO care_plans VALUES"
             " ('CP001-v3', 'P001', 'E001', 3, 'published', '2026-11-02')"
         )
+
+
+def test_only_one_pending_confirmation_per_conversation(db: psycopg.Connection) -> None:
+    db.execute("INSERT INTO conversations (id, patient_id) VALUES ('conv-db', 'P001')")
+    for thread_id in ("conv-db:1", "conv-db:2"):
+        db.execute(
+            "INSERT INTO workflow_runs (thread_id, conversation_id, status)"
+            " VALUES (%s, 'conv-db', 'running')",
+            (thread_id,),
+        )
+    await_confirmation = (
+        "UPDATE workflow_runs SET status = 'awaiting_confirmation' WHERE thread_id = %s"
+    )
+    db.execute(await_confirmation, ("conv-db:1",))
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        db.execute(await_confirmation, ("conv-db:2",))
+
+
+def test_checkpoint_tables_exist(db: psycopg.Connection) -> None:
+    row = db.execute("SELECT to_regclass('public.checkpoints') AS name").fetchone()
+    assert row["name"] == "checkpoints"

@@ -2,8 +2,10 @@ import ast
 from pathlib import Path
 
 import pytest
+from langgraph.checkpoint.memory import InMemorySaver
 
 from careflow.agents.tools import TOOLS, ToolSpec
+from careflow.graph.workflow import build_graph
 from careflow.memory.manager import SemanticKey
 from careflow.safety.memory_guard import is_clinical
 
@@ -84,7 +86,7 @@ def test_repository_writes_only_called_from_tools() -> None:
         for path in SRC.rglob("*.py")
         if path.parent.name != "db" and repository_calls(path) & set(REPOSITORY_WRITES)
     }
-    assert callers == {"agents/tools.py"}
+    assert callers == {"agents/tools.py", "graph/executor.py"}
 
 
 def test_fastembed_only_in_model_modules() -> None:
@@ -101,3 +103,59 @@ def test_careplan_answerer_has_no_tools_or_database() -> None:
 @pytest.mark.parametrize("key", list(SemanticKey))
 def test_semantic_keys_are_not_clinical(key: SemanticKey) -> None:
     assert not is_clinical(key.value.replace("_", " "))
+
+
+def test_langgraph_only_in_graph_and_checkpointer() -> None:
+    users = modules_importing("langgraph")
+    assert all(path.startswith("graph/") or path == "db/checkpointer.py" for path in users)
+
+
+def test_scheduler_has_no_database_or_tools() -> None:
+    imports = imported_modules(SRC / "agents" / "scheduler.py")
+    assert not [
+        name for name in imports if name.startswith(("careflow.db", "careflow.agents.tools"))
+    ]
+
+
+def graph_edges() -> dict[str, set[str]]:
+    edges: dict[str, set[str]] = {}
+    for edge in build_graph(None, InMemorySaver()).get_graph().edges:
+        edges.setdefault(edge.source, set()).add(edge.target)
+    return edges
+
+
+def test_escalation_cannot_be_overruled() -> None:
+    edges = graph_edges()
+    assert edges["escalate"] == {"finalize"}
+    assert "escalate" in edges["safety_gate"]
+    assert not [
+        source
+        for source, targets in edges.items()
+        if source != "safety_gate" and "escalate" in targets
+    ]
+
+
+def state_keys_read(method: ast.FunctionDef) -> set[str]:
+    keys = set()
+    for node in ast.walk(method):
+        if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant):
+            keys.add(node.slice.value)
+        elif isinstance(node, ast.Call) and getattr(node.func, "attr", None) == "get" and node.args:
+            first = node.args[0]
+            keys.add(first.value if isinstance(first, ast.Constant) else None)
+    return keys
+
+
+def node_methods() -> list[ast.FunctionDef]:
+    tree = ast.parse((SRC / "graph" / "nodes.py").read_text())
+    [nodes_class] = [
+        n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "WorkflowNodes"
+    ]
+    return [n for n in nodes_class.body if isinstance(n, ast.FunctionDef)]
+
+
+@pytest.mark.parametrize(
+    ("key", "readers"), [("message", {"intake", "safety_gate"}), ("recent", {"intake"})]
+)
+def test_raw_patient_text_reaches_only_intake_and_gate(key: str, readers: set[str]) -> None:
+    assert {method.name for method in node_methods() if key in state_keys_read(method)} == readers
