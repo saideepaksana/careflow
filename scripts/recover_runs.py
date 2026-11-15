@@ -7,10 +7,12 @@ from careflow.graph.workflow import recover_run
 from careflow.knowledge.rerank import FastReranker
 from careflow.llm.gateway import build_llm
 from careflow.memory.embeddings import FastEmbedder
+from careflow.observability.tracing import setup_tracing
 
 
 def main() -> None:
     settings = load_settings()
+    setup_tracing(settings.otel_endpoint)
     checkpointer = open_checkpointer(settings.database_url)
     with connect(settings.database_url, autocommit=True) as conn:
         deps = WorkflowDeps(conn, build_llm(settings), FastEmbedder(), FastReranker())

@@ -1,4 +1,6 @@
 import json
+import time
+from collections.abc import Callable
 from typing import Protocol, TypeVar
 
 import litellm
@@ -6,6 +8,8 @@ from pydantic import BaseModel, ValidationError
 
 from careflow.config import LLM_TIMEOUT_SECONDS, MAX_REPAIRS, REPAIR_ERROR_MAX_CHARS, Settings
 from careflow.llm.reliability import CircuitBreaker, CircuitOpenError, call_with_retry
+from careflow.observability.budget import RequestBudget, current_budget
+from careflow.observability.tracing import Span, span
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -18,6 +22,7 @@ TRANSIENT_ERRORS = (
     litellm.InternalServerError,
     litellm.ServiceUnavailableError,
 )
+FALLBACK_ERRORS = (*TRANSIENT_ERRORS, CircuitOpenError, litellm.NotFoundError)
 JSON_VALIDATE_FAILED = "json_validate_failed"
 
 
@@ -33,32 +38,85 @@ class LLMUnavailableError(Exception):
     pass
 
 
+class LLMBudgetExceeded(LLMUnavailableError):
+    pass
+
+
+def provider_name(model: str) -> str:
+    return model.split("/", 1)[0]
+
+
+def response_cost(model: str, input_tokens: int, output_tokens: int) -> float | None:
+    prices = litellm.model_cost.get(model)
+    if not prices:
+        return None
+    return input_tokens * prices.get("input_cost_per_token", 0.0) + output_tokens * prices.get(
+        "output_cost_per_token", 0.0
+    )
+
+
+def response_usage(response: object) -> tuple[int, int]:
+    usage = getattr(response, "usage", None)
+    return (getattr(usage, "prompt_tokens", 0) or 0, getattr(usage, "completion_tokens", 0) or 0)
+
+
 class LiteLLMClient:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        sleep: Callable[[float], None] = time.sleep,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self.settings = settings
-        self.breaker = CircuitBreaker(TRANSIENT_ERRORS)
+        self.sleep = sleep
+        models = [settings.llm_model, settings.llm_fallback_model]
+        self.models = [model for model in models if model]
+        self.breakers = {model: CircuitBreaker(TRANSIENT_ERRORS, clock) for model in self.models}
 
     def complete(self, system: str, user: str) -> str:
-        try:
-            return self.breaker.call(
-                lambda: call_with_retry(lambda: self.send(system, user), TRANSIENT_ERRORS)
-            )
-        except (*TRANSIENT_ERRORS, CircuitOpenError) as exc:
-            raise LLMUnavailableError(type(exc).__name__) from exc
+        for model in self.models:
+            try:
+                return self.complete_with(model, system, user)
+            except FALLBACK_ERRORS:
+                continue
+        raise LLMUnavailableError("all models failed")
 
-    def send(self, system: str, user: str) -> str:
+    def complete_with(self, model: str, system: str, user: str) -> str:
+        attributes = {
+            "gen_ai.operation.name": "chat",
+            "gen_ai.provider.name": provider_name(model),
+            "gen_ai.request.model": model,
+            "careflow.fallback": model != self.settings.llm_model,
+        }
+        with span(f"chat {model}", **attributes) as current:
+
+            def attempt() -> str:
+                return self.send(model, system, user, current)
+
+            return self.breakers[model].call(
+                lambda: call_with_retry(attempt, TRANSIENT_ERRORS, self.sleep)
+            )
+
+    def send(self, model: str, system: str, user: str, current: Span) -> str:
+        budget = current_budget()
+        if budget is not None and budget.exceeded():
+            raise LLMBudgetExceeded("request budget exhausted")
+        timeout = LLM_TIMEOUT_SECONDS
+        if budget is not None:
+            timeout = min(timeout, budget.remaining_seconds())
         try:
-            response = self.request(system, user)
+            response = self.request(model, system, user, timeout)
         except litellm.BadRequestError as exc:
             # The provider rejects invalid JSON itself; an empty reply lets the repair loop retry.
             if JSON_VALIDATE_FAILED in str(exc):
                 return ""
             raise
+        record_usage(model, response, current, budget)
         return response.choices[0].message.content or ""
 
-    def request(self, system: str, user: str) -> litellm.ModelResponse:
+    def request(self, model: str, system: str, user: str, timeout: float) -> litellm.ModelResponse:
         return litellm.completion(
-            model=self.settings.llm_model,
+            model=model,
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
@@ -66,9 +124,21 @@ class LiteLLMClient:
             temperature=self.settings.llm_temperature,
             api_key=self.settings.llm_api_key,
             api_base=self.settings.llm_base_url or None,
-            timeout=LLM_TIMEOUT_SECONDS,
+            timeout=timeout,
             response_format={"type": "json_object"},
         )
+
+
+def record_usage(model: str, response: object, current: Span, budget: RequestBudget | None) -> None:
+    input_tokens, output_tokens = response_usage(response)
+    cost = response_cost(model, input_tokens, output_tokens)
+    current.set_attribute("gen_ai.response.model", str(getattr(response, "model", "")))
+    current.set_attribute("gen_ai.usage.input_tokens", input_tokens)
+    current.set_attribute("gen_ai.usage.output_tokens", output_tokens)
+    current.set_attribute("careflow.cost_usd", cost or 0.0)
+    current.set_attribute("careflow.cost_known", cost is not None)
+    if budget is not None:
+        budget.record(input_tokens, output_tokens, cost or 0.0)
 
 
 class FakeLLM:

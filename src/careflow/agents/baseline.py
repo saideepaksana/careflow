@@ -12,9 +12,15 @@ from careflow.agents.baseline_prompt import (
 from careflow.agents.intake import Turn
 from careflow.agents.tools import PatientTools
 from careflow.config import AGENT_MAX_STEPS, THOUGHT_MAX_CHARS
-from careflow.llm.gateway import LLM, LLMOutputError, LLMUnavailableError, complete_structured
+from careflow.llm.gateway import (
+    LLM,
+    LLMBudgetExceeded,
+    LLMOutputError,
+    LLMUnavailableError,
+    complete_structured,
+)
 
-StopReason = Literal["replied", "max_steps", "invalid_output", "llm_unavailable"]
+StopReason = Literal["replied", "max_steps", "invalid_output", "llm_unavailable", "budget"]
 
 
 class AgentStep(BaseModel):
@@ -77,10 +83,9 @@ def run_baseline_agent(
     for _ in range(AGENT_MAX_STEPS):
         try:
             step = next_step(llm, system, build_agent_prompt(message, context, steps))
-        except LLMUnavailableError:
-            return AgentResult(
-                reply=UNAVAILABLE_REPLY, stop_reason="llm_unavailable", tool_calls=steps
-            )
+        except LLMUnavailableError as error:
+            reason = "budget" if isinstance(error, LLMBudgetExceeded) else "llm_unavailable"
+            return AgentResult(reply=UNAVAILABLE_REPLY, stop_reason=reason, tool_calls=steps)
         if step is None:
             return AgentResult(reply=FALLBACK_REPLY, stop_reason="invalid_output", tool_calls=steps)
         if step.action == "reply":

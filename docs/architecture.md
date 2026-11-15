@@ -76,3 +76,7 @@ The pipeline runs in this order: metadata filter (the patient's current document
 | Episodic | Session summaries and timestamped events | Written at the end of the session |
 | Semantic | Non-clinical preferences, transport, caregiver | Must pass schema validation. Consolidated between sessions. |
 | Procedural | Versioned prompts and protocol files | Changed only by developers |
+
+## Observability and budgets
+
+Every API request is one OpenTelemetry trace: the FastAPI server span, then `api.*`, then `careflow.invocation` for each workflow invocation, with `workflow.node`, `chat {model}` (tokens and cost) and `execute_tool` spans below. Traces go to a self-hosted Phoenix. Spans never carry prompt, reply or patient text; audit events carry the trace id. Each API request has a token and wall-clock budget; the gateway checks it before every model call and the supervisor before every item, and a spent budget becomes a hand-off. The gateway has one circuit breaker per model and falls back to a second model on the same provider.

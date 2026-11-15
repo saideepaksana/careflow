@@ -232,3 +232,32 @@ def test_timeline_of_unknown_patient_is_404(fresh_db_url: str) -> None:
     client = make_client(fresh_db_url, QUESTION_SCRIPT)
     response = client.get("/api/coordinator/patients/P999/timeline", headers=COORDINATOR)
     assert response.status_code == 404
+
+
+def test_timeline_and_queue_link_to_the_trace(fresh_db_url: str, spans) -> None:
+    client = make_client(fresh_db_url, book_lab("2026-11-10"))
+    headers, conversation_id, _ = start_booking(client, "Book my blood test on the 10th")
+    confirm(client, headers, conversation_id)
+    [task] = client.get("/api/coordinator/tasks", headers=COORDINATOR).json()
+    events = client.get("/api/coordinator/patients/P001/timeline", headers=COORDINATOR).json()
+    workflow = [event for event in events if event["kind"] == "workflow"]
+    traces = {format(s.context.trace_id, "032x") for s in spans.get_finished_spans()}
+    assert {event["text"] for event in workflow} == {
+        "awaiting_confirmation",
+        "awaiting_coordinator",
+    }
+    assert {event["detail"]["trace_id"] for event in workflow} <= traces
+    assert task["trace_id"] in traces
+
+
+def test_api_request_holds_one_trace(fresh_db_url: str, spans) -> None:
+    client = make_client(fresh_db_url, QUESTION_SCRIPT)
+    start_booking(client, "When is my visit?")
+    finished = spans.get_finished_spans()
+    by_name = {s.name: s for s in finished}
+    root = by_name["POST /api/conversations/{conversation_id}/messages"]
+    api, invocation = by_name["api.message"], by_name["careflow.invocation"]
+    in_request = [s for s in finished if s.name.startswith(("api.", "careflow.", "workflow."))]
+    assert root.parent is None
+    assert invocation.parent.span_id == api.context.span_id
+    assert {s.context.trace_id for s in in_request} == {root.context.trace_id}

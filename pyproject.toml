@@ -14,6 +14,8 @@ dependencies = [
     "langgraph-checkpoint-postgres==3.2.0",
     "litellm==1.106.7",
     "mcp==2.3.0",
+    "opentelemetry-exporter-otlp-proto-http==1.45.2",
+    "opentelemetry-sdk==1.45.2",
     "psycopg[binary]>=3.2",
     "pydantic>=2",
     "python-dotenv",
@@ -29,7 +31,10 @@ where = ["src"]
 [tool.pytest.ini_options]
 pythonpath = ["src", "."]
 testpaths = ["tests"]
-filterwarnings = ["ignore::DeprecationWarning:langsmith.*"]
+filterwarnings = [
+    "ignore::DeprecationWarning:langsmith.*",
+    "ignore:Item .* is using the `ReadOnly` qualifier:UserWarning",
+]
 
 [tool.ruff]
 line-length = 100

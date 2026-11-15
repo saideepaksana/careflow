@@ -41,6 +41,7 @@ function TaskCard({ task, token, onDone }: { task: Task; token: string; onDone: 
       </div>
       <div>{task.title}</div>
       <div className="task-detail">{task.detail.text}</div>
+      {task.trace_id && <div className="task-detail">Trace {task.trace_id}</div>}
       <input value={note} onChange={(event) => setNote(event.target.value)} placeholder="Note to patient" />
       <div className="confirm">
         {task.kind === "approval" ? (

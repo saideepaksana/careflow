@@ -11,5 +11,15 @@ services:
       - pgdata:/var/lib/postgresql/data
       - ./docker/initdb.sql:/docker-entrypoint-initdb.d/initdb.sql:ro
 
+  phoenix:
+    image: arizephoenix/phoenix:21.0.0
+    ports:
+      - "6006:6006"
+    environment:
+      PHOENIX_WORKING_DIR: /phoenix
+    volumes:
+      - phoenixdata:/phoenix
+
 volumes:
   pgdata:
+  phoenixdata:

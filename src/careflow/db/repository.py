@@ -207,11 +207,17 @@ def create_coordinator_task(
 
 
 def insert_audit_event(
-    conn: psycopg.Connection, patient_id: str, actor: str, event: str, detail: dict
+    conn: psycopg.Connection,
+    patient_id: str,
+    actor: str,
+    event: str,
+    detail: dict,
+    trace_id: str | None = None,
 ) -> None:
     conn.execute(
-        "INSERT INTO audit_events (patient_id, actor, event, detail) VALUES (%s, %s, %s, %s)",
-        (patient_id, actor, event, Jsonb(detail)),
+        "INSERT INTO audit_events (patient_id, actor, event, detail, trace_id)"
+        " VALUES (%s, %s, %s, %s, %s)",
+        (patient_id, actor, event, Jsonb(detail), trace_id),
     )
 
 
@@ -508,7 +514,9 @@ def booked_appointment_for_item(
 def list_open_tasks(conn: psycopg.Connection) -> list[dict]:
     return conn.execute(
         "SELECT t.id, t.patient_id, p.name AS patient_name, t.kind, t.priority, t.title,"
-        " t.detail, t.thread_id, t.created_at"
+        " t.detail, t.thread_id, t.created_at,"
+        " (SELECT e.trace_id FROM audit_events e WHERE e.event = 'workflow_invocation'"
+        "  AND e.detail->>'thread_id' = t.thread_id ORDER BY e.id LIMIT 1) AS trace_id"
         " FROM coordinator_tasks t JOIN patients p ON p.id = t.patient_id WHERE t.status = 'open'"
         " ORDER BY array_position(ARRAY['emergency', 'urgent', 'routine'], t.priority),"
         " t.created_at, t.id"
@@ -582,6 +590,11 @@ SELECT * FROM (
          jsonb_build_object('type', mem.type, 'key', mem.key,
                             'superseded', mem.superseded_by IS NOT NULL), mem.id
   FROM memories mem WHERE mem.patient_id = %(p)s
+  UNION ALL
+  SELECT e.ts, 'workflow', e.detail->>'status',
+         jsonb_build_object('trace_id', e.trace_id, 'usage', e.detail->'usage',
+                            'invocation', e.detail->>'invocation'), e.id
+  FROM audit_events e WHERE e.patient_id = %(p)s AND e.event = 'workflow_invocation'
 ) events ORDER BY at DESC, kind, seq DESC LIMIT %(limit)s
 """
 

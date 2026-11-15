@@ -1,4 +1,6 @@
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request
@@ -25,6 +27,7 @@ from careflow.memory.working import (
     fold_if_needed,
     render_summary,
 )
+from careflow.observability.tracing import setup_tracing, traced_request
 
 CHAT_ROLES = ("patient", "assistant")
 
@@ -155,14 +158,15 @@ def post_message(
     require_conversation(conn, conversation_id, patient_id)
     if repository.pending_confirmation(conn, conversation_id):
         raise HTTPException(status_code=409, detail="please answer the pending confirmation")
-    memory = refresh_working_memory(llm, conn, conversation_id)
-    repository.insert_message(conn, conversation_id, "patient", body.text)
-    context = RunContext(
-        summary=render_summary(memory.summary),
-        recent=memory.recent,
-        memories=recall(conn, embedder, patient_id, body.text),
-    )
-    result = start_run(deps, checkpointer, conversation_id, patient_id, body.text, context)
+    with traced_request("api.message", **{"careflow.patient_id": patient_id}):
+        memory = refresh_working_memory(llm, conn, conversation_id)
+        repository.insert_message(conn, conversation_id, "patient", body.text)
+        context = RunContext(
+            summary=render_summary(memory.summary),
+            recent=memory.recent,
+            memories=recall(conn, embedder, patient_id, body.text),
+        )
+        result = start_run(deps, checkpointer, conversation_id, patient_id, body.text, context)
     return reply_from(result)
 
 
@@ -180,7 +184,9 @@ def confirm(
     if thread_id is None:
         raise HTTPException(status_code=409, detail="nothing to confirm")
     repository.insert_message(conn, conversation_id, "patient", "Yes" if body.approved else "No")
-    return reply_from(resume_run(deps, checkpointer, thread_id, "confirmation", body.approved))
+    with traced_request("api.confirm", **{"careflow.patient_id": patient_id}):
+        result = resume_run(deps, checkpointer, thread_id, "confirmation", body.approved)
+    return reply_from(result)
 
 
 @router.post("/conversations/{conversation_id}/end")
@@ -193,15 +199,22 @@ def end_conversation(
         repository.end_conversation(conn, conversation_id)
         return MemoryWriteResult()
     try:
-        digest = digest_session(llm, memory.summary, memory.recent)
+        with traced_request("api.end", **{"careflow.patient_id": patient_id}):
+            digest = digest_session(llm, memory.summary, memory.recent)
     except (LLMOutputError, LLMUnavailableError) as error:
         raise HTTPException(status_code=503, detail="memory could not be written") from error
     repository.end_conversation(conn, conversation_id)
     return write_session_memory(conn, embedder, patient_id, conversation_id, digest)
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    setup_tracing(app.state.settings.otel_endpoint)
+    yield
+
+
 def create_app(llm: LLM | None = None) -> FastAPI:
-    app = FastAPI(title="CareFlow")
+    app = FastAPI(title="CareFlow", lifespan=lifespan)
     app.state.settings = load_settings()
     app.state.sessions = SessionStore()
     app.state.llm = llm

@@ -32,6 +32,8 @@ from careflow.knowledge.search import RetrievedChunk
 from careflow.llm.gateway import LLM, LLMOutputError, LLMUnavailableError
 from careflow.mcp_servers.client import CarePlanView, McpTools
 from careflow.memory.embeddings import Embedder
+from careflow.observability.budget import current_budget
+from careflow.observability.tracing import current_trace_id
 from careflow.safety.gate import EscalationLevel, GateDecision, evaluate_gate
 from careflow.safety.verifier import Verdict, VerdictKind, verify_plan
 
@@ -43,6 +45,8 @@ ITEM_ROUTES = {
     ItemKind.symptom_report: "hand_off",
     ItemKind.clinical_request: "hand_off",
 }
+# Without an intake record the gate cannot check warning-sign readings, so err towards urgent.
+HANDOFF_PRIORITIES = {"intake_failed": "urgent"}
 ESCALATION_REPLIES = {
     EscalationLevel.EMERGENCY: replies.EMERGENCY_REPLY,
     EscalationLevel.URGENT: replies.URGENT_REPLY,
@@ -124,6 +128,22 @@ def build_plan(
     )
 
 
+def budget_spent() -> bool:
+    budget = current_budget()
+    return budget is not None and budget.exceeded()
+
+
+def capped(state: WorkflowState, steps: int) -> dict | None:
+    """Stop routing at the step cap, or hand off once when the request budget is spent."""
+    if steps > SUPERVISOR_MAX_STEPS:
+        left = ",".join(str(i) for i in state.get("pending") or [])
+        return {"steps": steps, "route": "finalize", "outcome": [*state["outcome"], f"cap:{left}"]}
+    if budget_spent() and state.get("pending") != []:
+        update = {"steps": steps, "pending": [], "route": "hand_off", "handoff_reason": "budget"}
+        return {**update, "outcome": [*state["outcome"], "budget"]}
+    return None
+
+
 def task_key(state: WorkflowState, node: str) -> str:
     return f"{state['thread_id']}:task:{node}:{state.get('current')}"
 
@@ -194,13 +214,9 @@ class WorkflowNodes:
 
     def supervisor(self, state: WorkflowState) -> dict:
         steps = state["steps"] + 1
-        if steps > SUPERVISOR_MAX_STEPS:
-            left = ",".join(str(i) for i in state.get("pending") or [])
-            return {
-                "steps": steps,
-                "route": "finalize",
-                "outcome": [*state["outcome"], f"cap:{left}"],
-            }
+        stop = capped(state, steps)
+        if stop is not None:
+            return stop
         if state.get("intake") is None:
             route = "hand_off" if state.get("pending") is None else "finalize"
             return {
@@ -253,8 +269,9 @@ class WorkflowNodes:
         reason = state["handoff_reason"]
         summary = self.current_item(state).summary if state.get("current") is not None else ""
         detail = f"{summary} (reason: {reason})"
+        priority = HANDOFF_PRIORITIES.get(reason, "routine")
         self.create_task(
-            state, "hand_off", "handoff", "routine", "Patient needs a coordinator", detail
+            state, "hand_off", "handoff", priority, "Patient needs a coordinator", detail
         )
         return {
             "replies": [*state["replies"], HANDOFF_REPLY],
@@ -362,5 +379,6 @@ class WorkflowNodes:
             "workflow",
             "workflow_finished",
             {"thread_id": state["thread_id"], "outcome": state["outcome"]},
+            current_trace_id(),
         )
         return posted

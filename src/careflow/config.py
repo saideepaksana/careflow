@@ -57,6 +57,9 @@ MAX_REPLANS = 2
 SLOT_SCAN_LIMIT = 200
 MORNING_END_HOUR = 12
 TIMELINE_LIMIT = 200
+REQUEST_TOKEN_BUDGET = 30000
+REQUEST_TIME_BUDGET_SECONDS = 120
+SERVICE_NAME = "careflow"
 RED_FLAG_TERMS = (
     "chest pain",
     "chest tightness",
@@ -123,6 +126,7 @@ class Settings:
     database_url: str = ""
     test_database_url: str = ""
     coordinator_token: str = ""
+    otel_endpoint: str = ""
 
 
 def load_settings() -> Settings:
@@ -136,4 +140,5 @@ def load_settings() -> Settings:
         database_url=os.getenv("DATABASE_URL", ""),
         test_database_url=os.getenv("TEST_DATABASE_URL", ""),
         coordinator_token=os.getenv("COORDINATOR_TOKEN", ""),
+        otel_endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
     )

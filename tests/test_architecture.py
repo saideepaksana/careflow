@@ -218,3 +218,7 @@ def node_methods() -> list[ast.FunctionDef]:
 )
 def test_raw_patient_text_reaches_only_intake_and_gate(key: str, readers: set[str]) -> None:
     assert {method.name for method in node_methods() if key in state_keys_read(method)} == readers
+
+
+def test_opentelemetry_only_in_observability() -> None:
+    assert all(path.startswith("observability/") for path in modules_importing("opentelemetry"))

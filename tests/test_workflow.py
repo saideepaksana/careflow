@@ -15,6 +15,7 @@ from careflow.graph.workflow import (
 )
 from careflow.knowledge.rerank import FakeReranker
 from careflow.memory.embeddings import FakeEmbedder
+from careflow.observability.budget import RequestBudget, request_budget
 from tests.scripted import (
     RoleLLM,
     appointment,
@@ -198,3 +199,27 @@ def test_part_of_day_picks_a_matching_slot(workflow_conn: psycopg.Connection) ->
     )
     waiting = Flow(workflow_conn, script).start("Book my blood test tomorrow afternoon")
     assert "at 14:00" in waiting.confirmation
+
+
+def test_spent_budget_hands_off_before_planning(workflow_conn: psycopg.Connection) -> None:
+    flow = Flow(workflow_conn, book_lab("2026-11-03"))
+    with request_budget(RequestBudget(max_seconds=0)):
+        result = flow.start("Book my blood test")
+    [task] = tasks(workflow_conn)
+    assert "planner" not in flow.llm.calls
+    assert result.messages == [HANDOFF_REPLY]
+    assert "reason: budget" in task["text"]
+
+
+@pytest.mark.parametrize(
+    ("message", "kind", "priority"),
+    [
+        ("I fainted this morning", "escalation", "emergency"),
+        ("I have put on 2.5 kg since Sunday", "handoff", "urgent"),
+    ],
+)
+def test_intake_failure_still_errs_towards_escalation(
+    workflow_conn: psycopg.Connection, message: str, kind: str, priority: str
+) -> None:
+    Flow(workflow_conn, {"intake": "not json"}).start(message)
+    assert [(t["kind"], t["priority"]) for t in tasks(workflow_conn)] == [(kind, priority)]

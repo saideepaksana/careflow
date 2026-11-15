@@ -12,6 +12,7 @@ from careflow.mcp_servers.actions import actions_server
 from careflow.mcp_servers.knowledge import knowledge_server
 from careflow.mcp_servers.records import records_server
 from careflow.memory.embeddings import Embedder
+from careflow.observability.tracing import span
 
 
 class McpToolError(Exception):
@@ -56,11 +57,19 @@ class McpTools:
         }
 
     def call(self, server: str, tool: str, args: dict) -> dict:
-        plain = json.loads(json.dumps(args, default=str))
-        result = asyncio.run(call_tool(self.servers[server], tool, plain))
-        if result.is_error or len(result.content) != 1:
-            raise McpToolError(tool)
-        return json.loads(result.content[0].text)
+        attributes = {
+            "gen_ai.operation.name": "execute_tool",
+            "gen_ai.tool.name": tool,
+            "careflow.mcp_server": server,
+        }
+        with span(f"execute_tool {tool}", **attributes) as current:
+            plain = json.loads(json.dumps(args, default=str))
+            result = asyncio.run(call_tool(self.servers[server], tool, plain))
+            if result.is_error or len(result.content) != 1:
+                raise McpToolError(tool)
+            envelope = json.loads(result.content[0].text)
+            current.set_attribute("careflow.tool.ok", bool(envelope.get("ok")))
+            return envelope
 
     def read_envelope(self, tool: str, args: dict | None = None) -> dict:
         return self.call("records", tool, args or {})

@@ -17,6 +17,7 @@ from careflow.db.connection import Connection
 from careflow.knowledge.rerank import Reranker
 from careflow.mcp_servers.client import McpTools
 from careflow.memory.embeddings import Embedder
+from careflow.observability.tracing import current_trace_id
 
 AUDIT_ACTOR = "baseline_agent"
 READ_TOOLS = {
@@ -133,6 +134,7 @@ class PatientTools:
             AUDIT_ACTOR,
             "tool_call",
             {"tool": name, "args": to_json_safe(args), "result": result},
+            current_trace_id(),
         )
         return result
 

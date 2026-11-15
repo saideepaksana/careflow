@@ -11,6 +11,7 @@ export type Task = {
   title: string;
   detail: { text?: string };
   thread_id: string | null;
+  trace_id: string | null;
 };
 export type PatientOverview = { id: string; name: string; diagnosis: string | null; open_tasks: number };
 export type TimelineEvent = { at: string; kind: string; text: string; detail: Record<string, unknown> };

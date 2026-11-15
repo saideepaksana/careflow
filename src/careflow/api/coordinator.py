@@ -11,6 +11,7 @@ from careflow.api.deps import Checkpoints, Db, Workflow
 from careflow.config import CLINIC_TIMEZONE, TIMELINE_LIMIT
 from careflow.db import repository
 from careflow.graph.workflow import resume_run
+from careflow.observability.tracing import traced_request
 
 CoordinatorToken = Annotated[str, Header(alias="X-Coordinator-Token")]
 
@@ -34,6 +35,7 @@ class TaskOut(BaseModel):
     title: str
     detail: dict
     thread_id: str | None
+    trace_id: str | None
 
 
 class PatientOverview(BaseModel):
@@ -90,7 +92,10 @@ def decide(
     run = repository.get_run(conn, task["thread_id"]) if task["thread_id"] else None
     owns_run = run and repository.thread_patient(conn, run["thread_id"]) == task["patient_id"]
     if task["kind"] == "approval" and owns_run and run["status"] == "awaiting_coordinator":
-        result = resume_run(deps, checkpointer, task["thread_id"], "coordinator", body.model_dump())
+        with traced_request("api.decision", **{"careflow.patient_id": task["patient_id"]}):
+            result = resume_run(
+                deps, checkpointer, task["thread_id"], "coordinator", body.model_dump()
+            )
         return DecisionOut(task_id=task_id, run_status=result.status)
     repository.resolve_task(conn, task_id, body.note)
     if body.note and task["conversation_id"]:

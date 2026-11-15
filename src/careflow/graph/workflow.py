@@ -1,7 +1,9 @@
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.errors import GraphBubbleUp
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
@@ -11,6 +13,8 @@ from careflow.agents.intake import Turn
 from careflow.db import repository
 from careflow.graph.nodes import LLM_ERRORS, WorkflowDeps, WorkflowNodes
 from careflow.graph.state import WorkflowState
+from careflow.observability.budget import RequestBudget
+from careflow.observability.tracing import Span, current_trace_id, span, traced_request
 
 Crash = Callable[[str], None]
 Checkpointer = BaseCheckpointSaver
@@ -65,15 +69,20 @@ class RunContext(BaseModel):
     memories: list[str] = []
 
 
-def with_crash_points(name: str, node: Callable, crash: Crash | None) -> Callable:
-    if crash is None:
-        return node
+def no_crash(point: str) -> None:
+    return None
+
+
+def traced_node(name: str, node: Callable, crash: Crash | None) -> Callable:
+    """Wraps a node in its span (interrupts are not errors) and the crash-test points."""
+    crash_at = crash or no_crash
 
     def wrapped(state: WorkflowState) -> dict:
-        crash(f"before:{name}")
-        update = node(state)
-        crash(f"after:{name}")
-        return update
+        with span(f"workflow.node {name}", ignore=(GraphBubbleUp,), **{"careflow.node": name}):
+            crash_at(f"before:{name}")
+            update = node(state)
+            crash_at(f"after:{name}")
+            return update
 
     return wrapped
 
@@ -84,7 +93,7 @@ def build_graph(
     nodes = WorkflowNodes(deps)
     graph = StateGraph(WorkflowState)
     for name in NODE_NAMES:
-        graph.add_node(name, with_crash_points(name, getattr(nodes, name), crash))
+        graph.add_node(name, traced_node(name, getattr(nodes, name), crash))
     for source, target in FIXED_EDGES:
         graph.add_edge(source, target)
     for source, targets in ROUTES.items():
@@ -120,6 +129,42 @@ def initial_state(
     }
 
 
+def record_invocation(
+    deps: WorkflowDeps, thread_id: str, invocation: str, status: str, budget: RequestBudget
+) -> None:
+    detail = {"thread_id": thread_id, "invocation": invocation, "status": status}
+    repository.insert_audit_event(
+        deps.conn,
+        repository.thread_patient(deps.conn, thread_id),
+        "workflow",
+        "workflow_invocation",
+        {**detail, "usage": budget.summary()},
+        current_trace_id(),
+    )
+
+
+@contextmanager
+def invocation_scope(thread_id: str, invocation: str) -> Iterator[tuple[Span, RequestBudget]]:
+    attributes = {"careflow.thread_id": thread_id, "careflow.invocation": invocation}
+    with traced_request("careflow.invocation", **attributes) as scope:
+        yield scope
+
+
+def close_invocation(
+    deps: WorkflowDeps,
+    scope: tuple[Span, RequestBudget],
+    thread_id: str,
+    invocation: str,
+    result: RunResult,
+) -> RunResult:
+    current, budget = scope
+    current.set_attribute("careflow.status", result.status)
+    for key, value in budget.summary().items():
+        current.set_attribute(f"careflow.usage.{key}", value)
+    record_invocation(deps, thread_id, invocation, result.status, budget)
+    return result
+
+
 def finish(
     deps: WorkflowDeps, graph: CompiledStateGraph, thread_id: str, after_message: int
 ) -> RunResult:
@@ -151,8 +196,12 @@ def start_run(
     after_message = repository.last_message_id(deps.conn, conversation_id)
     graph = build_graph(deps, checkpointer, crash)
     state = initial_state(thread_id, conversation_id, patient_id, message, context)
-    graph.invoke(state, thread_config(thread_id), durability=DURABILITY)
-    return finish(deps, graph, thread_id, after_message)
+    with invocation_scope(thread_id, "start") as scope:
+        scope[0].set_attribute("careflow.patient_id", patient_id)
+        graph.invoke(state, thread_config(thread_id), durability=DURABILITY)
+        return close_invocation(
+            deps, scope, thread_id, "start", finish(deps, graph, thread_id, after_message)
+        )
 
 
 def resume_run(
@@ -171,8 +220,11 @@ def resume_run(
     run = repository.get_run(deps.conn, thread_id)
     after_message = repository.last_message_id(deps.conn, run["conversation_id"])
     repository.set_run_status(deps.conn, thread_id, "running")
-    graph.invoke(Command(resume={interrupts[0].id: value}), config, durability=DURABILITY)
-    return finish(deps, graph, thread_id, after_message)
+    with invocation_scope(thread_id, "resume") as scope:
+        graph.invoke(Command(resume={interrupts[0].id: value}), config, durability=DURABILITY)
+        return close_invocation(
+            deps, scope, thread_id, "resume", finish(deps, graph, thread_id, after_message)
+        )
 
 
 def recover_run(
@@ -183,9 +235,17 @@ def recover_run(
 ) -> RunResult:
     """Continue a run that a crash left in status running."""
     graph = build_graph(deps, checkpointer, crash)
-    config = thread_config(thread_id)
     run = repository.get_run(deps.conn, thread_id)
     after_message = repository.last_message_id(deps.conn, run["conversation_id"])
+    with invocation_scope(thread_id, "recover") as scope:
+        result = continue_run(deps, graph, thread_id, after_message)
+        return close_invocation(deps, scope, thread_id, "recover", result)
+
+
+def continue_run(
+    deps: WorkflowDeps, graph: CompiledStateGraph, thread_id: str, after_message: int
+) -> RunResult:
+    config = thread_config(thread_id)
     failed = RunResult(thread_id=thread_id, status="failed", messages=[])
     if not graph.get_state(config).values:
         repository.set_run_status(deps.conn, thread_id, "failed")
