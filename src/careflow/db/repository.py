@@ -311,3 +311,70 @@ def nearest_episodes(
         " ORDER BY embedding <=> %s::vector LIMIT %s",
         (patient_id, to_vector_literal(embedding), limit),
     ).fetchall()
+
+
+def replace_corpus(conn: psycopg.Connection, documents: list[dict], chunks: list[dict]) -> None:
+    conn.execute("DELETE FROM documents")
+    with conn.cursor() as cursor:
+        cursor.executemany(
+            "INSERT INTO documents (id, title, owner_patient_id, condition, version, status,"
+            " effective_from) VALUES (%(id)s, %(title)s, %(owner_patient_id)s, %(condition)s,"
+            " %(version)s, %(status)s, %(effective_from)s)",
+            documents,
+        )
+        cursor.executemany(
+            "INSERT INTO chunks (id, document_id, heading, content, embedding)"
+            " VALUES (%(id)s, %(document_id)s, %(heading)s, %(content)s, %(embedding)s::vector)",
+            [{**chunk, "embedding": to_vector_literal(chunk["embedding"])} for chunk in chunks],
+        )
+
+
+VISIBLE_CHUNKS = """
+    chunks c JOIN documents d ON d.id = c.document_id
+    WHERE d.status = 'current' AND (
+      d.owner_patient_id = %(patient_id)s
+      OR (d.owner_patient_id IS NULL AND (d.condition = 'any' OR d.condition IN (
+        SELECT condition FROM documents
+        WHERE owner_patient_id = %(patient_id)s AND status = 'current'))))
+"""
+
+
+def keyword_search(conn: psycopg.Connection, patient_id: str, query: str, limit: int) -> list[str]:
+    rows = conn.execute(
+        "WITH q AS (SELECT replace(plainto_tsquery('english', %(query)s)::text, '&', '|')"
+        "::tsquery AS terms)"
+        f" SELECT c.id FROM q, {VISIBLE_CHUNKS} AND c.search_text @@ q.terms"
+        " ORDER BY ts_rank_cd(c.search_text, q.terms) DESC, c.id LIMIT %(limit)s",
+        {"patient_id": patient_id, "query": query, "limit": limit},
+    ).fetchall()
+    return [row["id"] for row in rows]
+
+
+def dense_search(
+    conn: psycopg.Connection, patient_id: str, embedding: list[float], limit: int
+) -> list[str]:
+    rows = conn.execute(
+        f"SELECT c.id FROM {VISIBLE_CHUNKS}"
+        " ORDER BY c.embedding <=> %(embedding)s::vector, c.id LIMIT %(limit)s",
+        {"patient_id": patient_id, "embedding": to_vector_literal(embedding), "limit": limit},
+    ).fetchall()
+    return [row["id"] for row in rows]
+
+
+def get_chunks(conn: psycopg.Connection, chunk_ids: list[str]) -> list[dict]:
+    rows = conn.execute(
+        "SELECT c.id, c.document_id, d.title, c.heading, c.content"
+        " FROM chunks c JOIN documents d ON d.id = c.document_id WHERE c.id = ANY(%s)",
+        (chunk_ids,),
+    ).fetchall()
+    by_id = {row["id"]: row for row in rows}
+    return [by_id[chunk_id] for chunk_id in chunk_ids if chunk_id in by_id]
+
+
+def chunk_status(conn: psycopg.Connection, chunk_ids: list[str]) -> dict[str, str]:
+    rows = conn.execute(
+        "SELECT c.id, d.status FROM chunks c JOIN documents d ON d.id = c.document_id"
+        " WHERE c.id = ANY(%s)",
+        (chunk_ids,),
+    ).fetchall()
+    return {row["id"]: row["status"] for row in rows}

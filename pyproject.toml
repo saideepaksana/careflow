@@ -38,4 +38,5 @@ max-complexity = 10
 [tool.ruff.lint.per-file-ignores]
 "src/careflow/agents/intake_prompt.py" = ["E501"]
 "src/careflow/agents/baseline_prompt.py" = ["E501"]
+"src/careflow/agents/careplan_prompt.py" = ["E501"]
 "src/careflow/memory/prompts.py" = ["E501"]

@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from careflow.api.app import create_app
 from careflow.config import Settings
+from careflow.knowledge.rerank import FakeReranker
 from careflow.llm.gateway import FakeLLM
 from careflow.memory.embeddings import FakeEmbedder
 
@@ -20,6 +21,7 @@ def client(seeded_db_url: str) -> TestClient:
     app = create_app(llm)
     app.state.settings = Settings(database_url=seeded_db_url)
     app.state.embedder = FakeEmbedder()
+    app.state.reranker = FakeReranker()
     return TestClient(app)
 
 

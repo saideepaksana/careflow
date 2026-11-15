@@ -7,9 +7,17 @@ from datetime import date
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from careflow.agents.intake import Specialty, Urgency
-from careflow.config import IDEMPOTENCY_HASH_CHARS, TASK_TITLE_MAX_CHARS, TOOL_ERROR_MAX_CHARS
+from careflow.config import (
+    IDEMPOTENCY_HASH_CHARS,
+    RETRIEVAL_RESULT_MAX_CHARS,
+    TASK_TITLE_MAX_CHARS,
+    TOOL_ERROR_MAX_CHARS,
+)
 from careflow.db import repository
 from careflow.db.connection import Connection
+from careflow.knowledge.rerank import Reranker
+from careflow.knowledge.search import retrieve
+from careflow.memory.embeddings import Embedder
 
 AUDIT_ACTOR = "baseline_agent"
 
@@ -22,6 +30,10 @@ class FindSlotsArgs(NoArgs):
     specialty: Specialty
     start_date: date
     end_date: date
+
+
+class SearchDocumentsArgs(NoArgs):
+    query: str = Field(min_length=1)
 
 
 class BookAppointmentArgs(NoArgs):
@@ -57,6 +69,11 @@ TOOLS: dict[str, ToolSpec] = {
     "find_slots": ToolSpec(
         "Find free appointment slots for a specialty between two dates.", FindSlotsArgs, False
     ),
+    "search_documents": ToolSpec(
+        "Search the patient's current care documents and hospital guides.",
+        SearchDocumentsArgs,
+        False,
+    ),
     "book_appointment": ToolSpec(
         "Book a free slot, optionally for a care-plan item.", BookAppointmentArgs, True
     ),
@@ -83,10 +100,19 @@ def to_json_safe(value: object) -> object:
 class PatientTools:
     """Tools bound to one session's patient; the model never chooses the patient."""
 
-    def __init__(self, conn: Connection, patient_id: str, conversation_id: str) -> None:
+    def __init__(
+        self,
+        conn: Connection,
+        patient_id: str,
+        conversation_id: str,
+        embedder: Embedder,
+        reranker: Reranker,
+    ) -> None:
         self.conn = conn
         self.patient_id = patient_id
         self.conversation_id = conversation_id
+        self.embedder = embedder
+        self.reranker = reranker
 
     def describe(self) -> str:
         lines = [
@@ -133,7 +159,20 @@ class PatientTools:
             "find_slots": lambda a: repository.find_free_slots(
                 conn, a.specialty.value, a.start_date, a.end_date
             ),
+            "search_documents": lambda a: self.search_documents(a.query),
         }
+
+    def search_documents(self, query: str) -> list[dict]:
+        chunks = retrieve(self.conn, self.embedder, self.reranker, self.patient_id, query)
+        return [
+            {
+                "source": chunk.id,
+                "title": chunk.title,
+                "heading": chunk.heading,
+                "text": chunk.content[:RETRIEVAL_RESULT_MAX_CHARS],
+            }
+            for chunk in chunks
+        ]
 
     def write_handlers(self) -> dict[str, Callable[[BaseModel, str], dict]]:
         conn, patient_id = self.conn, self.patient_id

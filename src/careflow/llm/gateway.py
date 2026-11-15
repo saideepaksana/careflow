@@ -18,6 +18,7 @@ TRANSIENT_ERRORS = (
     litellm.InternalServerError,
     litellm.ServiceUnavailableError,
 )
+JSON_VALIDATE_FAILED = "json_validate_failed"
 
 
 class LLM(Protocol):
@@ -46,7 +47,17 @@ class LiteLLMClient:
             raise LLMUnavailableError(type(exc).__name__) from exc
 
     def send(self, system: str, user: str) -> str:
-        response = litellm.completion(
+        try:
+            response = self.request(system, user)
+        except litellm.BadRequestError as exc:
+            # The provider rejects invalid JSON itself; an empty reply lets the repair loop retry.
+            if JSON_VALIDATE_FAILED in str(exc):
+                return ""
+            raise
+        return response.choices[0].message.content or ""
+
+    def request(self, system: str, user: str) -> litellm.ModelResponse:
+        return litellm.completion(
             model=self.settings.llm_model,
             messages=[
                 {"role": "system", "content": system},
@@ -58,7 +69,6 @@ class LiteLLMClient:
             timeout=LLM_TIMEOUT_SECONDS,
             response_format={"type": "json_object"},
         )
-        return response.choices[0].message.content or ""
 
 
 class FakeLLM:

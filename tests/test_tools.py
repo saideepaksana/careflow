@@ -4,11 +4,19 @@ import psycopg
 import pytest
 
 from careflow.agents.tools import PatientTools
+from careflow.config import CORPUS_DIR
+from careflow.knowledge.corpus import ingest_corpus
+from careflow.knowledge.rerank import FakeReranker
+from careflow.memory.embeddings import FakeEmbedder
+
+
+def make_tools(db: psycopg.Connection, patient_id: str, conversation_id: str) -> PatientTools:
+    return PatientTools(db, patient_id, conversation_id, FakeEmbedder(), FakeReranker())
 
 
 @pytest.fixture
 def tools(db: psycopg.Connection) -> PatientTools:
-    return PatientTools(db, "P001", "conv-test")
+    return make_tools(db, "P001", "conv-test")
 
 
 def free_slot(tools: PatientTools, specialty: str = "cardiology") -> str:
@@ -49,14 +57,14 @@ def test_same_booking_twice_is_replayed(tools: PatientTools, db: psycopg.Connect
 
 
 def test_taken_slot_is_rejected(db: psycopg.Connection) -> None:
-    slot = free_slot(PatientTools(db, "P001", "conv-a"))
-    PatientTools(db, "P001", "conv-a").call_tool("book_appointment", {"slot_id": slot})
-    result = PatientTools(db, "P002", "conv-b").call_tool("book_appointment", {"slot_id": slot})
+    slot = free_slot(make_tools(db, "P001", "conv-a"))
+    make_tools(db, "P001", "conv-a").call_tool("book_appointment", {"slot_id": slot})
+    result = make_tools(db, "P002", "conv-b").call_tool("book_appointment", {"slot_id": slot})
     assert result == {"ok": False, "error": "slot_taken"}
 
 
 def test_cannot_cancel_other_patients_appointment(db: psycopg.Connection) -> None:
-    tools = PatientTools(db, "P002", "conv-test")
+    tools = make_tools(db, "P002", "conv-test")
     result = tools.call_tool("cancel_appointment", {"appointment_id": "A001"})
     assert result == {"ok": False, "error": "not_found"}
 
@@ -91,3 +99,13 @@ def test_every_call_is_audited(tools: PatientTools, db: psycopg.Connection) -> N
     tools.call_tool("get_care_plan", {})
     tools.call_tool("delete_everything", {})
     assert audit_count(db) == before + 2
+
+
+def test_search_documents_returns_only_own_current_documents(db: psycopg.Connection) -> None:
+    ingest_corpus(db, FakeEmbedder(), CORPUS_DIR)
+    tools = make_tools(db, "P001", "conv-test")
+    results = tools.call_tool("search_documents", {"query": "How much fluid can I drink?"})["data"]
+    sources = [result["source"] for result in results]
+    assert results
+    assert not [source for source in sources if source.startswith("P001-plan-v1")]
+    assert not [source for source in sources if source[:4] in {"P002", "P003", "P004", "P005"}]

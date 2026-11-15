@@ -87,8 +87,15 @@ def test_repository_writes_only_called_from_tools() -> None:
     assert callers == {"agents/tools.py"}
 
 
-def test_fastembed_only_in_embeddings_module() -> None:
-    assert modules_importing("fastembed") == {"memory/embeddings.py"}
+def test_fastembed_only_in_model_modules() -> None:
+    assert modules_importing("fastembed") == {"memory/embeddings.py", "knowledge/rerank.py"}
+
+
+def test_careplan_answerer_has_no_tools_or_database() -> None:
+    imports = imported_modules(SRC / "agents" / "careplan.py")
+    assert not [
+        name for name in imports if name.startswith(("careflow.agents.tools", "careflow.db"))
+    ]
 
 
 @pytest.mark.parametrize("key", list(SemanticKey))

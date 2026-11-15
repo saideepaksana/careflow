@@ -13,6 +13,7 @@ from careflow.api.sessions import SessionStore
 from careflow.config import MESSAGE_MAX_CHARS, load_settings
 from careflow.db import repository
 from careflow.db.connection import Connection, connect
+from careflow.knowledge.rerank import FastReranker, Reranker
 from careflow.llm.gateway import LLM, LLMOutputError, LLMUnavailableError, build_llm
 from careflow.memory.embeddings import Embedder, FastEmbedder
 from careflow.memory.manager import (
@@ -85,6 +86,13 @@ def get_embedder(request: Request) -> Embedder:
     return state.embedder
 
 
+def get_reranker(request: Request) -> Reranker:
+    state = request.app.state
+    if state.reranker is None:
+        state.reranker = FastReranker()
+    return state.reranker
+
+
 def current_patient(request: Request, authorization: Annotated[str, Header()] = "") -> str:
     scheme, _, token = authorization.partition(" ")
     patient_id = request.app.state.sessions.patient_for(token) if scheme == "Bearer" else None
@@ -97,6 +105,7 @@ Db = Annotated[Connection, Depends(get_conn)]
 PatientId = Annotated[str, Depends(current_patient)]
 Llm = Annotated[LLM, Depends(get_llm)]
 Memory = Annotated[Embedder, Depends(get_embedder)]
+Ranker = Annotated[Reranker, Depends(get_reranker)]
 
 
 def require_conversation(conn: Connection, conversation_id: str, patient_id: str) -> None:
@@ -171,6 +180,7 @@ def post_message(
     conn: Db,
     llm: Llm,
     embedder: Memory,
+    reranker: Ranker,
 ) -> ReplyOut:
     require_conversation(conn, conversation_id, patient_id)
     memory = refresh_working_memory(llm, conn, conversation_id)
@@ -180,7 +190,7 @@ def post_message(
         recent=memory.recent,
         memories=recall(conn, embedder, patient_id, body.text),
     )
-    tools = PatientTools(conn, patient_id, conversation_id)
+    tools = PatientTools(conn, patient_id, conversation_id, embedder, reranker)
     result = run_baseline_agent(llm, tools, body.text, context)
     repository.insert_message(conn, conversation_id, "assistant", result.reply)
     return ReplyOut(reply=result.reply, stop_reason=result.stop_reason)
@@ -209,6 +219,7 @@ def create_app(llm: LLM | None = None) -> FastAPI:
     app.state.sessions = SessionStore()
     app.state.llm = llm
     app.state.embedder = None
+    app.state.reranker = None
     app.include_router(router)
     return app
 

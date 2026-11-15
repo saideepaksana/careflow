@@ -1,8 +1,17 @@
+import litellm
 import pytest
 from pydantic import BaseModel
 
 from careflow.config import Settings
-from careflow.llm.gateway import FakeLLM, LLMOutputError, build_llm, complete_structured
+from careflow.llm.gateway import (
+    FakeLLM,
+    LiteLLMClient,
+    LLMOutputError,
+    build_llm,
+    complete_structured,
+)
+
+CLIENT_SETTINGS = Settings(llm_model="groq/x", llm_api_key="k")
 
 
 class Answer(BaseModel):
@@ -42,3 +51,22 @@ def test_build_llm_requires_model_and_key(settings: Settings) -> None:
     with pytest.raises(RuntimeError) as error:
         build_llm(settings)
     assert "secret" not in str(error.value)
+
+
+def test_provider_json_rejection_becomes_empty_reply(monkeypatch: pytest.MonkeyPatch) -> None:
+    def reject(**_: object) -> None:
+        raise litellm.BadRequestError(
+            message='{"error": {"code": "json_validate_failed"}}', model="m", llm_provider="groq"
+        )
+
+    monkeypatch.setattr(litellm, "completion", reject)
+    assert LiteLLMClient(CLIENT_SETTINGS).send("system", "user") == ""
+
+
+def test_other_bad_requests_still_raise(monkeypatch: pytest.MonkeyPatch) -> None:
+    def reject(**_: object) -> None:
+        raise litellm.BadRequestError(message="model not found", model="m", llm_provider="groq")
+
+    monkeypatch.setattr(litellm, "completion", reject)
+    with pytest.raises(litellm.BadRequestError):
+        LiteLLMClient(CLIENT_SETTINGS).send("system", "user")
