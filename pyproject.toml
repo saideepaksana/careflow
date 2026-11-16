@@ -50,4 +50,5 @@ max-complexity = 10
 "src/careflow/agents/baseline_prompt.py" = ["E501"]
 "src/careflow/agents/careplan_prompt.py" = ["E501"]
 "src/careflow/agents/scheduler_prompt.py" = ["E501"]
+"src/careflow/evaluation/judge_prompt.py" = ["E501"]
 "src/careflow/memory/prompts.py" = ["E501"]

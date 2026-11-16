@@ -619,3 +619,21 @@ def plan_progress_rows(conn: psycopg.Connection, patient_id: str) -> list[dict]:
         " ORDER BY i.id",
         (patient_id,),
     ).fetchall()
+
+
+def appointment_snapshot(conn: psycopg.Connection, patient_id: str) -> dict[str, dict]:
+    rows = conn.execute(
+        "SELECT a.id, a.status, a.slot_id, a.care_plan_item_id, s.starts_at, c.specialty"
+        " FROM appointments a JOIN slots s ON s.id = a.slot_id"
+        " JOIN clinicians c ON c.id = s.clinician_id WHERE a.patient_id = %s ORDER BY a.id",
+        (patient_id,),
+    ).fetchall()
+    return {row["id"]: row for row in rows}
+
+
+def task_snapshot(conn: psycopg.Connection, patient_id: str) -> list[dict]:
+    return conn.execute(
+        "SELECT id, kind, priority, status, title FROM coordinator_tasks"
+        " WHERE patient_id = %s ORDER BY id",
+        (patient_id,),
+    ).fetchall()

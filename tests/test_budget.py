@@ -46,3 +46,12 @@ def test_nested_request_joins_the_outer_budget() -> None:
 
 def test_no_budget_outside_a_request() -> None:
     assert current_budget() is None
+
+
+def test_pause_is_not_counted_against_the_time_cap() -> None:
+    clock = Clock()
+    budget = RequestBudget(max_seconds=5, clock=clock)
+    clock.now += 60
+    budget.pause(58)
+    assert budget.elapsed() == 2
+    assert not budget.exceeded()

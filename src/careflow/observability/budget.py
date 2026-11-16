@@ -22,6 +22,10 @@ class RequestBudget:
         if self.started < 0:
             self.started = self.clock()
 
+    def pause(self, seconds: float) -> None:
+        """Exclude time spent waiting outside the system (evaluation pacing) from the time cap."""
+        self.started += seconds
+
     def elapsed(self) -> float:
         return self.clock() - self.started
 
