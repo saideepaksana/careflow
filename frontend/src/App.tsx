@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import {
   confirmChange,
   createConversation,
@@ -11,11 +11,21 @@ import {
   sendMessage,
 } from "./api";
 import Coordinator from "./Coordinator";
+import { formatTime } from "./format";
+import { Row, Section, Shell } from "./Shell";
 
 const CHAT_POLL_MS = 10000;
 
-type ChatLine = { role: "patient" | "assistant" | "coordinator"; text: string };
-type Session = { token: string; patientName: string };
+type ChatLine = { role: "patient" | "assistant" | "coordinator"; text: string; at?: string };
+type Session = { token: string; patientId: string; patientName: string };
+
+function EmergencyNote() {
+  return (
+    <p className="emergency">
+      In an emergency, call <strong>112</strong>.
+    </p>
+  );
+}
 
 function SignIn({ onSignedIn }: { onSignedIn: (session: Session) => void }) {
   const [patients, setPatients] = useState<Patient[]>([]);
@@ -35,14 +45,14 @@ function SignIn({ onSignedIn }: { onSignedIn: (session: Session) => void }) {
     event.preventDefault();
     try {
       const result = await login(patientId);
-      onSignedIn({ token: result.token, patientName: result.patient_name });
+      onSignedIn({ token: result.token, patientId, patientName: result.patient_name });
     } catch (err) {
       setError((err as Error).message);
     }
   }
 
   return (
-    <form className="card" onSubmit={submit}>
+    <form className="panel" onSubmit={submit}>
       <h2>Patient sign-in</h2>
       <label>
         Patient
@@ -54,7 +64,7 @@ function SignIn({ onSignedIn }: { onSignedIn: (session: Session) => void }) {
           ))}
         </select>
       </label>
-      <button type="submit" disabled={!patientId}>
+      <button type="submit" className="primary" disabled={!patientId}>
         Sign in
       </button>
       {error && <p className="error">{error}</p>}
@@ -71,31 +81,64 @@ function CoordinatorSignIn({ onSignedIn }: { onSignedIn: (token: string) => void
   }
 
   return (
-    <form className="card" onSubmit={submit}>
+    <form className="panel" onSubmit={submit}>
       <h2>Coordinator sign-in</h2>
       <label>
         Coordinator token
         <input type="password" value={token} onChange={(event) => setToken(event.target.value)} />
       </label>
-      <button type="submit" disabled={!token.trim()}>
+      <button type="submit" className="primary" disabled={!token.trim()}>
         Open console
       </button>
     </form>
   );
 }
 
-function Chat({ session }: { session: Session }) {
+function Welcome({
+  onPatient,
+  onCoordinator,
+}: {
+  onPatient: (session: Session) => void;
+  onCoordinator: (token: string) => void;
+}) {
+  const sidebar = (
+    <Section title="About">
+      <p className="text">
+        Patients book and move follow-up visits and ask about their discharge plan. Anything clinical goes to a nurse
+        coordinator.
+      </p>
+      <EmergencyNote />
+    </Section>
+  );
+  return (
+    <Shell sidebar={sidebar}>
+      <div className="sign-in">
+        <SignIn onSignedIn={onPatient} />
+        <CoordinatorSignIn onSignedIn={onCoordinator} />
+      </div>
+    </Shell>
+  );
+}
+
+function Chat({ session, onSignOut }: { session: Session; onSignOut: () => void }) {
   const [conversationId, setConversationId] = useState("");
   const [lines, setLines] = useState<ChatLine[]>([]);
   const [text, setText] = useState("");
   const [waiting, setWaiting] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
+  const list = useRef<HTMLUListElement>(null);
 
   const reload = useCallback(
     async (id: string) => {
       const messages = await listMessages(session.token, id);
-      setLines(messages.map((message) => ({ role: message.role as ChatLine["role"], text: message.content })));
+      setLines(
+        messages.map((message) => ({
+          role: message.role as ChatLine["role"],
+          text: message.content,
+          at: message.created_at,
+        })),
+      );
     },
     [session.token],
   );
@@ -105,6 +148,10 @@ function Chat({ session }: { session: Session }) {
     const timer = window.setInterval(() => reload(conversationId).catch(() => undefined), CHAT_POLL_MS);
     return () => window.clearInterval(timer);
   }, [conversationId, waiting, reload]);
+
+  useEffect(() => {
+    list.current?.scrollTo({ top: list.current.scrollHeight });
+  }, [lines, waiting, pending]);
 
   async function showReply(id: string, result: Reply) {
     setPending(result.confirmation !== null);
@@ -130,6 +177,7 @@ function Chat({ session }: { session: Session }) {
     try {
       await showReply(conversationId, await confirmChange(session.token, conversationId, approved));
     } catch (err) {
+      setLines((current) => current.slice(0, -1));
       setError((err as Error).message);
     } finally {
       setWaiting(false);
@@ -149,64 +197,92 @@ function Chat({ session }: { session: Session }) {
       setConversationId(id);
       await showReply(id, await sendMessage(session.token, id, message));
     } catch (err) {
+      setLines((current) => current.slice(0, -1));
+      setText(message);
       setError((err as Error).message);
     } finally {
       setWaiting(false);
     }
   }
 
-  return (
-    <div className="card chat">
-      <header>
-        <strong>{session.patientName}</strong>
-        <button type="button" onClick={startNew} disabled={waiting}>
-          New conversation
-        </button>
-      </header>
-      <ul className="messages">
-        {lines.map((line, index) => (
-          <li key={index} className={line.role}>
-            {line.text}
-          </li>
-        ))}
-      </ul>
-      {pending && (
-        <div className="confirm">
-          <button type="button" onClick={() => answer(true)} disabled={waiting}>
-            Yes
+  const sidebar = (
+    <>
+      <Section title="Patient">
+        <h1>{session.patientName}</h1>
+        <div className="rows">
+          <Row label="Patient ID" value={session.patientId} />
+          <Row label="Conversation" value={conversationId ? "Active" : "Not started"} />
+        </div>
+        <div className="actions">
+          <button type="button" onClick={startNew} disabled={waiting}>
+            New conversation
           </button>
-          <button type="button" onClick={() => answer(false)} disabled={waiting}>
-            No
+          <button type="button" onClick={onSignOut}>
+            Sign out
           </button>
         </div>
-      )}
-      <form onSubmit={send}>
-        <input
-          value={text}
-          onChange={(event) => setText(event.target.value)}
-          placeholder="Type a message"
-          maxLength={2000}
-          disabled={pending}
-        />
-        <button type="submit" disabled={waiting || pending}>
-          {waiting ? "Thinking..." : "Send"}
-        </button>
-      </form>
-      {error && <p className="error">{error}</p>}
-    </div>
+      </Section>
+      <Section title="Help">
+        <p className="text">Ask to book or move a follow-up visit, or ask about your discharge plan.</p>
+        <EmergencyNote />
+      </Section>
+    </>
+  );
+
+  return (
+    <Shell sidebar={sidebar}>
+      <div className="chat">
+        <ul className="messages" ref={list}>
+          {lines.length === 0 && !waiting && <li className="empty">No messages yet.</li>}
+          {lines.map((line, index) => (
+            <li key={index} className={line.role}>
+              {line.text}
+              {line.at && <span className="time">{formatTime(line.at)}</span>}
+            </li>
+          ))}
+          {waiting && (
+            <li className="assistant typing" aria-label="CareFlow is replying">
+              <span />
+              <span />
+              <span />
+            </li>
+          )}
+        </ul>
+        {pending && (
+          <div className="confirm-bar">
+            <span>Confirm this change?</span>
+            <div className="actions">
+              <button type="button" onClick={() => answer(false)} disabled={waiting}>
+                No
+              </button>
+              <button type="button" className="primary" onClick={() => answer(true)} disabled={waiting}>
+                Yes
+              </button>
+            </div>
+          </div>
+        )}
+        <form className="composer" onSubmit={send}>
+          <input
+            value={text}
+            onChange={(event) => setText(event.target.value)}
+            placeholder={pending ? "Answer the question above first" : "Type a message"}
+            maxLength={2000}
+            disabled={pending}
+          />
+          <button type="submit" className="primary" disabled={waiting || pending}>
+            Send
+          </button>
+        </form>
+        {error && <p className="error">{error}</p>}
+      </div>
+    </Shell>
   );
 }
 
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [coordinatorToken, setCoordinatorToken] = useState("");
-  if (session) return <Chat session={session} />;
-  if (coordinatorToken) return <Coordinator token={coordinatorToken} />;
-  return (
-    <div className="stack">
-      <h1>CareFlow</h1>
-      <SignIn onSignedIn={setSession} />
-      <CoordinatorSignIn onSignedIn={setCoordinatorToken} />
-    </div>
-  );
+  if (session) return <Chat session={session} onSignOut={() => setSession(null)} />;
+  if (coordinatorToken) return <Coordinator token={coordinatorToken} onSignOut={() => setCoordinatorToken("")} />;
+  return <Welcome onPatient={setSession} onCoordinator={setCoordinatorToken} />;
 }

@@ -2,6 +2,8 @@ import hashlib
 import json
 import subprocess
 import sys
+from itertools import product
+from pathlib import Path
 
 from careflow import clock
 from careflow.config import (
@@ -14,7 +16,13 @@ from careflow.config import (
     PROJECT_ROOT,
     load_settings,
 )
-from careflow.db.connection import clone_database, connect, database_url_for, recreate_database
+from careflow.db.connection import (
+    Connection,
+    clone_database,
+    connect,
+    database_url_for,
+    recreate_database,
+)
 from careflow.db.seed import seed
 from careflow.evaluation.e2e import CellContext, eval_settings, run_cell
 from careflow.evaluation.judge import JUDGED_CATEGORIES, judge_reply
@@ -33,7 +41,7 @@ JUDGEMENTS_PATH = PROJECT_ROOT / "reports" / "m8" / "judgements.jsonl"
 QUOTA_REASON = "provider_unavailable"
 
 
-def read_jsonl(path) -> list[dict]:
+def read_jsonl(path: Path) -> list[dict]:
     return (
         [json.loads(line) for line in path.read_text().splitlines() if line]
         if path.exists()
@@ -41,7 +49,7 @@ def read_jsonl(path) -> list[dict]:
     )
 
 
-def append_jsonl(path, row: dict) -> None:
+def append_jsonl(path: Path, row: dict) -> None:
     with path.open("a") as handle:
         handle.write(json.dumps(row, default=str) + "\n")
 
@@ -89,16 +97,15 @@ def run_one(ctx: CellContext, scenario: Scenario, system: str, trial: int, meta:
 def run_trial(ctx: CellContext, scenarios: list[Scenario], trial: int, stamp: dict) -> bool:
     """Runs the missing cells of one trial; False when the provider looks exhausted."""
     rows, invalid_streak = read_jsonl(RUNS_PATH), 0
-    for scenario in scenarios:
-        for system in SYSTEMS:
-            done, attempts = cell_state(rows, (scenario.id, system, trial))
-            if done:
-                continue
-            meta = {"attempt": attempts + 1, "fingerprint": stamp}
-            row = run_one(ctx, scenario, system, trial, meta)
-            invalid_streak = 0 if row["valid"] else invalid_streak + 1
-            if invalid_streak >= EVAL_MAX_INVALID_IN_A_ROW:
-                return False
+    for scenario, system in product(scenarios, SYSTEMS):
+        done, attempts = cell_state(rows, (scenario.id, system, trial))
+        if done:
+            continue
+        meta = {"attempt": attempts + 1, "fingerprint": stamp}
+        row = run_one(ctx, scenario, system, trial, meta)
+        invalid_streak = 0 if row["valid"] else invalid_streak + 1
+        if invalid_streak >= EVAL_MAX_INVALID_IN_A_ROW:
+            return False
     return True
 
 
@@ -108,24 +115,26 @@ def judge_trial(ctx: CellContext, template_url: str, trial: int) -> None:
     judged = {cell_key(j) for j in read_jsonl(JUDGEMENTS_PATH) if not j.get("error")}
     with connect(template_url) as conn:
         for key, row in latest.items():
-            if key in judged:
-                continue
-            judgement = {"scenario": key[0], "system": key[1], "trial": key[2]}
-            try:
-                result = judge_reply(
-                    ctx.llm,
-                    conn,
-                    ctx.embedder,
-                    ctx.reranker,
-                    row_patient(row),
-                    row["question"],
-                    row["final_reply"],
-                )
-                judgement["claims"] = [claim.model_dump() for claim in result.claims]
-            except (LLMOutputError, LLMUnavailableError) as error:
-                judgement["error"] = type(error).__name__
-            append_jsonl(JUDGEMENTS_PATH, judgement)
-            ctx.meter.take()
+            if key not in judged:
+                append_jsonl(JUDGEMENTS_PATH, judge_row(ctx, conn, key, row))
+                ctx.meter.take()
+
+
+def judge_row(ctx: CellContext, conn: Connection, key: tuple[str, str, int], row: dict) -> dict:
+    judgement = {"scenario": key[0], "system": key[1], "trial": key[2]}
+    try:
+        result = judge_reply(
+            ctx.llm,
+            conn,
+            ctx.embedder,
+            ctx.reranker,
+            row_patient(row),
+            row["question"],
+            row["final_reply"],
+        )
+    except (LLMOutputError, LLMUnavailableError) as error:
+        return {**judgement, "error": type(error).__name__}
+    return {**judgement, "claims": [claim.model_dump() for claim in result.claims]}
 
 
 def row_patient(row: dict) -> str:

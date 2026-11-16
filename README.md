@@ -23,16 +23,16 @@ Course project 2 for CS5903 (Generative AI Systems Engineering, Pillar 1).
 | Path | Contents | Milestone |
 |---|---|---|
 | `src/careflow/llm/` | Provider-agnostic LLM gateway, structured output and repair loop, retry, circuit breaker | M1, M7 |
-| `src/careflow/db/` | PostgreSQL schema migrations, repository, synthetic seed data | M1 |
-| `src/careflow/agents/` | Intake, care-plan, scheduling planner, memory manager, single-agent baseline | M1, M2, M6 |
-| `src/careflow/safety/` | Red-flag gate, scope guard, deterministic verifier | M2, M8 |
-| `src/careflow/mcp_servers/` | `records` (read-only), `knowledge` (search), `actions` (write) MCP servers | M2, M6 |
+| `src/careflow/db/` | PostgreSQL schema migrations, repository, synthetic seed data, checkpointer | M1, M5 |
+| `src/careflow/agents/` | Intake, care-plan answerer, scheduling planner, single-agent baseline | M1, M2, M4, M5 |
+| `src/careflow/safety/` | Red-flag gate, deterministic verifier, clinical memory guard | M3, M5 |
+| `src/careflow/mcp_servers/` | `records` (read-only), `knowledge` (search), `actions` (write) MCP servers | M6 |
 | `src/careflow/memory/` | Working, episodic and semantic memory; consolidation | M3 |
-| `src/careflow/knowledge/` | Ingestion, chunking, hybrid retrieval, reranking, citation check | M3, M4 |
-| `src/careflow/graph/` | LangGraph state, nodes, routing, checkpointer, interrupts | M5, M6 |
-| `src/careflow/api/` | FastAPI app: auth and roles, conversations, SSE events, coordinator actions | M2, M6 |
-| `src/careflow/observability/` | OpenTelemetry tracing, token and cost accounting | M7 |
-| `src/careflow/evaluation/` | Scenarios, simulated patients, runner, metrics, judge | M4, M8 |
+| `src/careflow/knowledge/` | Ingestion, chunking, hybrid retrieval, reranking | M4 |
+| `src/careflow/graph/` | LangGraph state, nodes, routing, executor, interrupts | M5 |
+| `src/careflow/api/` | FastAPI app: demo login, conversations, confirmation, coordinator actions | M2, M5, M6 |
+| `src/careflow/observability/` | OpenTelemetry tracing, request budgets, usage metering | M7, M8 |
+| `src/careflow/evaluation/` | Scripted scenarios, systems under test, metrics, judge | M1, M3, M4, M8 |
 | `frontend/` | React + TypeScript patient portal and coordinator console | M2, M6 |
 | `corpus/` | Shared knowledge documents: condition protocols, operational FAQs | M4 |
 | `scripts/` | Seed, ingest and evaluation entry points | — |
@@ -41,7 +41,22 @@ Course project 2 for CS5903 (Generative AI Systems Engineering, Pillar 1).
 
 ## Status
 
-Proposal stage. The project structure is in place, and implementation starts with Milestone 1.
+All milestones (M1–M8) are built. Results are in the [final report](docs/report.md).
+
+## Running it
+
+Requires Python 3.14, Node 20+ and Docker. Copy `.env.example` to `.env` and set `LLM_API_KEY` (Groq).
+
+```bash
+sudo docker compose up -d                      # PostgreSQL + pgvector, Phoenix on :6006
+python -m venv .venv && .venv/bin/pip install -e ".[dev]"
+.venv/bin/python -m careflow.db.seed           # schema and synthetic patients
+.venv/bin/python scripts/ingest_corpus.py      # embed the document corpus
+.venv/bin/uvicorn careflow.api.app:app         # API on :8000
+cd frontend && npm install && npm run dev      # patient portal and coordinator console
+```
+
+Tests: `.venv/bin/pytest -q`. End-to-end evaluation: `.venv/bin/python -u scripts/eval_e2e.py`, then `.venv/bin/python scripts/eval_report.py`.
 
 ## Scope
 

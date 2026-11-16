@@ -17,7 +17,7 @@ CareFlow helps patients in the 30 days after hospital discharge: it books and mo
 | M7 | OpenTelemetry tracing to Phoenix, per-request token and time budgets, fallback model, cost accounting |
 | M8 | 50-scenario end-to-end suite against the baseline, LLM judge, this report |
 
-Every milestone spec was reviewed by an independent agent before it was built; the reviews found 22 blocking design errors in total, all fixed before implementation (details in `SPEC.md`).
+Every milestone spec from M5 on was reviewed by an independent agent before it was built, and the required changes were applied first (recorded in `SPEC.md`).
 
 ## 2. Evaluation setup
 

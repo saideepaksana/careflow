@@ -2,6 +2,7 @@ import json
 import random
 import re
 import subprocess
+from pathlib import Path
 
 from careflow.config import EVAL_TRIALS, PROJECT_ROOT
 from careflow.evaluation import metrics
@@ -20,7 +21,7 @@ HAND_CHECK_SAMPLE = 15
 SAMPLE_SEED = 7
 
 
-def read_jsonl(path) -> list[dict]:
+def read_jsonl(path: Path) -> list[dict]:
     return (
         [json.loads(line) for line in path.read_text().splitlines() if line]
         if path.exists()

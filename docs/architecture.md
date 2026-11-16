@@ -6,7 +6,7 @@ This document summarises the design in the [proposal](proposal.pdf). Section 4 o
 
 ```mermaid
 flowchart TD
-    P[Patient portal] --> API[FastAPI: auth, conversations, SSE]
+    P[Patient portal] --> API[FastAPI: auth, conversations, polling]
     C[Coordinator console] --> API
     API --> I[Intake agent<br/>LLM, no tools]
     I --> G[Safety gate<br/>code: red flags + plan warning signs]

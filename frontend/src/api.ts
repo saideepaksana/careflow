@@ -36,8 +36,16 @@ async function request<T>(
   if (token) headers.Authorization = `Bearer ${token}`;
   if (coordinatorToken) headers["X-Coordinator-Token"] = coordinatorToken;
   const response = await fetch(`/api${path}`, { ...init, headers });
-  if (!response.ok) throw new Error(`Request failed (${response.status})`);
+  if (!response.ok) throw new Error(errorText(response.status));
   return response.json() as Promise<T>;
+}
+
+function errorText(status: number): string {
+  if (status === 401) return "Your session has ended. Please sign in again.";
+  if (status === 403) return "That token was not accepted.";
+  if (status === 409) return "That request is no longer waiting for an answer.";
+  if (status >= 500) return "Something went wrong on our side. Please try again in a moment.";
+  return `The request could not be completed (${status}).`;
 }
 
 export const listPatients = () => request<Patient[]>("/patients");
