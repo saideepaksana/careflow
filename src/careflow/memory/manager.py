@@ -11,7 +11,7 @@ from careflow.llm.gateway import LLM, complete_structured
 from careflow.memory.embeddings import Embedder
 from careflow.memory.prompts import DIGEST_SYSTEM_PROMPT
 from careflow.memory.working import SessionSummary, format_turns, render_summary
-from careflow.safety.memory_guard import is_clinical
+from careflow.safety.memory_guard import is_clinical, without_clinical_sentences
 
 AUDIT_ACTOR = "memory_manager"
 
@@ -113,6 +113,29 @@ def replace_fact(
     return new_id
 
 
+def write_episode(
+    conn: Connection,
+    embedder: Embedder,
+    patient_id: str,
+    conversation_id: str,
+    text: str,
+    result: MemoryWriteResult,
+) -> None:
+    kept = without_clinical_sentences(text)
+    if kept != text.strip():
+        result.rejected_clinical += 1
+        repository.insert_audit_event(
+            conn, patient_id, AUDIT_ACTOR, "memory_rejected", {"memory_type": "episodic"}
+        )
+    if not kept:
+        return
+    episode = f"{clock.today().isoformat()}: {kept}"
+    embedding = embedder.embed([episode])[0]
+    result.episode_id = repository.insert_memory(
+        conn, patient_id, "episodic", None, episode, conversation_id, embedding
+    )
+
+
 def write_session_memory(
     conn: Connection,
     embedder: Embedder,
@@ -123,11 +146,7 @@ def write_session_memory(
     result = MemoryWriteResult()
     with conn.transaction():
         repository.lock_patient_memory(conn, patient_id)
-        episode = f"{clock.today().isoformat()}: {digest.episode}"
-        embedding = embedder.embed([episode])[0]
-        result.episode_id = repository.insert_memory(
-            conn, patient_id, "episodic", None, episode, conversation_id, embedding
-        )
+        write_episode(conn, embedder, patient_id, conversation_id, digest.episode, result)
         for fact in digest.facts:
             write_fact(conn, embedder, patient_id, conversation_id, fact, result)
     return result

@@ -11,6 +11,7 @@ from careflow.config import NOTE_MAX_CHARS, Settings
 from careflow.db import repository
 from careflow.db.checkpointer import is_alive, open_checkpointer
 from careflow.db.connection import connect
+from careflow.graph.replies import EMERGENCY_REPLY
 from careflow.graph.workflow import NoPendingInterrupt
 from careflow.knowledge.rerank import FakeReranker
 from careflow.memory.embeddings import FakeEmbedder
@@ -383,3 +384,22 @@ def test_checkpointer_killed_by_the_server_is_detected(fresh_db_url: str) -> Non
     with connect(fresh_db_url, autocommit=True) as admin:
         admin.execute("SELECT pg_terminate_backend(%s)", (saver.conn.info.backend_pid,))
     assert not is_alive(saver)
+
+
+def test_red_flag_during_pending_confirmation_escalates(fresh_db_url: str) -> None:
+    client = make_client(fresh_db_url, book_lab("2026-11-03"))
+    headers, conversation_id, waiting = start_booking(client, "Book my blood test tomorrow")
+    path = f"/api/conversations/{conversation_id}/messages"
+    reply = client.post(path, json={"text": "I have chest pain right now"}, headers=headers)
+    tasks = client.get("/api/coordinator/tasks", headers=COORDINATOR).json()
+    with connect(fresh_db_url, autocommit=True) as conn:
+        lab_bookings = conn.execute(
+            "SELECT count(*) AS n FROM appointments WHERE care_plan_item_id = 'CP001-v2-02'"
+        ).fetchone()["n"]
+        pending = repository.pending_confirmation(conn, conversation_id)
+    assert waiting["status"] == "awaiting_confirmation"
+    assert reply.status_code == 200
+    assert reply.json()["reply"].startswith(EMERGENCY_REPLY)
+    assert [(t["kind"], t["priority"]) for t in tasks] == [("escalation", "emergency")]
+    assert pending is None
+    assert lab_bookings == 0

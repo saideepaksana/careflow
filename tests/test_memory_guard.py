@@ -1,6 +1,6 @@
 import pytest
 
-from careflow.safety.memory_guard import is_clinical
+from careflow.safety.memory_guard import is_clinical, without_clinical_sentences
 
 
 @pytest.mark.parametrize(
@@ -41,3 +41,18 @@ def test_clinical_text_is_flagged(text: str) -> None:
 )
 def test_non_clinical_text_passes(text: str) -> None:
     assert not is_clinical(text)
+
+
+@pytest.mark.parametrize(
+    ("text", "kept"),
+    [
+        (
+            "Booked the lab. Takes 500mg metformin. Prefers mornings.",
+            "Booked the lab. Prefers mornings.",
+        ),
+        ("Asked when the visit is.", "Asked when the visit is."),
+        ("Reported ankle swelling.", ""),
+    ],
+)
+def test_clinical_sentences_are_removed(text: str, kept: str) -> None:
+    assert without_clinical_sentences(text) == kept

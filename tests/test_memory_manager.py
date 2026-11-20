@@ -82,3 +82,27 @@ def test_recall_returns_facts_and_nearest_episode(
     assert lines[0] == "transport: bus"
     assert "Rescheduled the lab test to Thursday." in lines[1]
     assert not any("fasting" in line for line in lines)
+
+
+def episodes(db: psycopg.Connection) -> list[str]:
+    rows = db.execute("SELECT content FROM memories WHERE type = 'episodic' ORDER BY id")
+    return [row["content"] for row in rows.fetchall()]
+
+
+def test_clinical_sentences_are_dropped_from_the_episode(
+    db: psycopg.Connection, conversation: str
+) -> None:
+    result = write(db, "Moved cardiology to Friday. Takes furosemide 40 mg. Prefers mornings.", [])
+    [episode] = episodes(db)
+    assert episode.endswith("Moved cardiology to Friday. Prefers mornings.")
+    assert result.rejected_clinical == 1
+
+
+def test_wholly_clinical_episode_is_not_stored(db: psycopg.Connection, conversation: str) -> None:
+    result = write(db, "Reported chest pain and a weight gain of 2.5 kg.", [])
+    event = db.execute(
+        "SELECT detail FROM audit_events WHERE event = 'memory_rejected' ORDER BY id DESC"
+    ).fetchone()
+    assert episodes(db) == []
+    assert result.episode_id == 0
+    assert event["detail"] == {"memory_type": "episodic"}

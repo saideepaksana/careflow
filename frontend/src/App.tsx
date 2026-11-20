@@ -227,6 +227,7 @@ function Chat({
       if (handleGone(err)) return;
       if (hasDetail(err, PENDING_CONFIRMATION)) {
         onUpdate({ pending: true });
+        setError("Please tap Yes or No above first. If this is an emergency, call 112.");
         return;
       }
       if (hasDetail(err, NOTHING_TO_CONFIRM)) onUpdate({ pending: false });
@@ -374,11 +375,10 @@ function Chat({
           <input
             value={text}
             onChange={(event) => setText(event.target.value)}
-            placeholder={pending ? "Answer the question above first" : "Type a message"}
+            placeholder={pending ? "Tap Yes or No above, or tell us about an urgent problem" : "Type a message"}
             maxLength={2000}
-            disabled={pending}
           />
-          <button type="submit" className="primary" disabled={waiting || ending || pending}>
+          <button type="submit" className="primary" disabled={waiting || ending}>
             Send
           </button>
         </form>

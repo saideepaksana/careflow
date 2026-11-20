@@ -50,6 +50,7 @@ from careflow.memory.working import (
     render_summary,
 )
 from careflow.observability.tracing import setup_tracing, traced_request
+from careflow.safety.gate import red_flag_reasons
 
 CHAT_ROLES = ("patient", "assistant")
 
@@ -179,11 +180,22 @@ def post_message(
 ) -> ReplyOut:
     require_conversation(conn, conversation_id, patient_id)
     with exclusive(conn, conversation_id):
-        if repository.pending_confirmation(conn, conversation_id):
+        pending = repository.pending_confirmation(conn, conversation_id)
+        if pending and not red_flag_reasons(body.text):
             raise HTTPException(status_code=409, detail="please answer the pending confirmation")
+        if pending:
+            decline_pending(deps, checkpointer, pending)
         return run_message(
             conn, llm, embedder, deps, checkpointer, conversation_id, patient_id, body.text
         )
+
+
+def decline_pending(deps: WorkflowDeps, checkpointer: Checkpointer, thread_id: str) -> None:
+    """A red flag must not wait behind a yes/no question, so the pending change is declined."""
+    try:
+        resume_run(deps, checkpointer, thread_id, "confirmation", False)
+    except NoPendingInterrupt:
+        repository.set_run_status(deps.conn, thread_id, "failed")
 
 
 def run_message(
