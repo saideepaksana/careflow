@@ -4,13 +4,15 @@ from typing import Annotated, Literal
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from careflow import clock
-from careflow.api.deps import Checkpoints, Db, Workflow
-from careflow.config import CLINIC_TIMEZONE, TIMELINE_LIMIT
+from careflow.api.deps import Checkpoints, Db, PathId, Storable, Workflow, exclusive
+from careflow.config import CLINIC_TIMEZONE, NOTE_MAX_CHARS, TIMELINE_LIMIT
 from careflow.db import repository
-from careflow.graph.workflow import resume_run
+from careflow.db.connection import Connection
+from careflow.graph.nodes import WorkflowDeps
+from careflow.graph.workflow import Checkpointer, NoPendingInterrupt, RunResult, resume_run
 from careflow.observability.tracing import traced_request
 
 CoordinatorToken = Annotated[str, Header(alias="X-Coordinator-Token")]
@@ -18,7 +20,7 @@ CoordinatorToken = Annotated[str, Header(alias="X-Coordinator-Token")]
 
 def require_coordinator(request: Request, token: CoordinatorToken = "") -> None:
     expected = request.app.state.settings.coordinator_token
-    if not expected or not secrets.compare_digest(token, expected):
+    if not expected or not secrets.compare_digest(token.encode(), expected.encode()):
         raise HTTPException(status_code=403, detail="coordinator token required")
 
 
@@ -67,7 +69,7 @@ class ProgressItem(BaseModel):
 
 class DecisionIn(BaseModel):
     approved: bool
-    note: str = ""
+    note: Storable = Field(default="", max_length=NOTE_MAX_CHARS)
 
 
 class DecisionOut(BaseModel):
@@ -80,27 +82,54 @@ def list_tasks(conn: Db) -> list[TaskOut]:
     return [TaskOut(**row) for row in repository.list_open_tasks(conn)]
 
 
-@router.post("/tasks/{task_id}/decision")
-def decide(
-    task_id: int, body: DecisionIn, conn: Db, deps: Workflow, checkpointer: Checkpoints
-) -> DecisionOut:
+def open_task(conn: Connection, task_id: int) -> dict:
     task = repository.get_task(conn, task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="task not found")
     if task["status"] != "open":
         raise HTTPException(status_code=409, detail="task already resolved")
+    return task
+
+
+@router.post("/tasks/{task_id}/decision")
+def decide(
+    task_id: int, body: DecisionIn, conn: Db, deps: Workflow, checkpointer: Checkpoints
+) -> DecisionOut:
+    lock_key = open_task(conn, task_id)["conversation_id"] or f"task:{task_id}"
+    with exclusive(conn, lock_key):
+        return apply_decision(conn, deps, checkpointer, open_task(conn, task_id), body)
+
+
+def apply_decision(
+    conn: Connection,
+    deps: WorkflowDeps,
+    checkpointer: Checkpointer,
+    task: dict,
+    body: DecisionIn,
+) -> DecisionOut:
     run = repository.get_run(conn, task["thread_id"]) if task["thread_id"] else None
     owns_run = run and repository.thread_patient(conn, run["thread_id"]) == task["patient_id"]
+    if task["kind"] == "approval" and owns_run and run["status"] == "running":
+        raise HTTPException(status_code=409, detail="the request is still in progress")
     if task["kind"] == "approval" and owns_run and run["status"] == "awaiting_coordinator":
         with traced_request("api.decision", **{"careflow.patient_id": task["patient_id"]}):
-            result = resume_run(
-                deps, checkpointer, task["thread_id"], "coordinator", body.model_dump()
-            )
-        return DecisionOut(task_id=task_id, run_status=result.status)
-    repository.resolve_task(conn, task_id, body.note)
+            result = resume_decision(deps, checkpointer, task["thread_id"], body)
+        if body.note:
+            repository.insert_message(conn, task["conversation_id"], "coordinator", body.note)
+        return DecisionOut(task_id=task["id"], run_status=result.status)
+    repository.resolve_task(conn, task["id"], body.note)
     if body.note and task["conversation_id"]:
         repository.insert_message(conn, task["conversation_id"], "coordinator", body.note)
-    return DecisionOut(task_id=task_id, run_status=run["status"] if run else None)
+    return DecisionOut(task_id=task["id"], run_status=run["status"] if run else None)
+
+
+def resume_decision(
+    deps: WorkflowDeps, checkpointer: Checkpointer, thread_id: str, body: DecisionIn
+) -> RunResult:
+    try:
+        return resume_run(deps, checkpointer, thread_id, "coordinator", body.model_dump())
+    except NoPendingInterrupt as error:
+        raise HTTPException(status_code=409, detail="the request is no longer waiting") from error
 
 
 @router.get("/patients")
@@ -114,7 +143,7 @@ def require_patient(conn: Db, patient_id: str) -> None:
 
 
 @router.get("/patients/{patient_id}/timeline")
-def timeline(patient_id: str, conn: Db) -> list[TimelineEvent]:
+def timeline(patient_id: PathId, conn: Db) -> list[TimelineEvent]:
     require_patient(conn, patient_id)
     rows = repository.patient_timeline(conn, patient_id, TIMELINE_LIMIT)
     return [TimelineEvent(**row) for row in rows]
@@ -128,7 +157,7 @@ def progress_status(due_date: date | None, starts_at: datetime | None) -> Progre
 
 
 @router.get("/patients/{patient_id}/progress")
-def progress(patient_id: str, conn: Db) -> list[ProgressItem]:
+def progress(patient_id: PathId, conn: Db) -> list[ProgressItem]:
     require_patient(conn, patient_id)
     return [
         ProgressItem(**row, status=progress_status(row["due_date"], row["starts_at"]))

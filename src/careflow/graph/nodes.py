@@ -6,7 +6,6 @@ from pydantic import BaseModel, ValidationError
 
 from careflow import clock
 from careflow.agents.careplan import answer_question
-from careflow.agents.careplan_prompt import HANDOFF_REPLY
 from careflow.agents.intake import (
     AppointmentAction,
     IntakeItem,
@@ -106,6 +105,16 @@ def find_slot(tools: McpTools, specialty: str, request: SchedulingRequest) -> di
     return choose_slot(request, [slot.model_dump() for slot in slots])
 
 
+def cancel_plan(tools: McpTools, plan: SchedulingPlan) -> SchedulingPlan:
+    if plan.appointment_id is None:
+        return plan
+    appointment = tools.read("get_appointment", {"appointment_id": plan.appointment_id})
+    if not appointment:
+        return plan
+    shown = {"specialty": appointment["specialty"], "starts_at": appointment["starts_at"]}
+    return SchedulingPlan.model_validate({**plan.model_dump(), **shown})
+
+
 def build_plan(
     tools: McpTools, view: CarePlanView | None, request: SchedulingRequest
 ) -> SchedulingPlan:
@@ -114,8 +123,10 @@ def build_plan(
         appointment_id=request.appointment_id,
         care_plan_item_id=request.care_plan_item_id,
     )
+    if request.action == AppointmentAction.cancel:
+        return cancel_plan(tools, plan)
     specialty = plan_specialty(tools, view, request)
-    if request.action == AppointmentAction.cancel or specialty is None:
+    if specialty is None:
         return plan
     slot = find_slot(tools, specialty, request) or {}
     return plan.model_copy(
@@ -139,7 +150,13 @@ def capped(state: WorkflowState, steps: int) -> dict | None:
         left = ",".join(str(i) for i in state.get("pending") or [])
         return {"steps": steps, "route": "finalize", "outcome": [*state["outcome"], f"cap:{left}"]}
     if budget_spent() and state.get("pending") != []:
-        update = {"steps": steps, "pending": [], "route": "hand_off", "handoff_reason": "budget"}
+        update = {
+            "steps": steps,
+            "pending": [],
+            "current": None,
+            "route": "hand_off",
+            "handoff_reason": "budget",
+        }
         return {**update, "outcome": [*state["outcome"], "budget"]}
     return None
 
@@ -203,10 +220,15 @@ class WorkflowNodes:
         decision = GateDecision.model_validate(state["gate"])
         record = IntakeRecord.model_validate(state["intake"]) if state.get("intake") else None
         summaries = [item.summary for item in record.items] if record else []
-        detail = f"Reasons: {', '.join(decision.reasons)}. Items: {' | '.join(summaries)}"
+        signs = repository.get_warning_signs(self.deps.conn, state["patient_id"])
+        names = {sign["id"]: sign["description"] for sign in signs}
+        reasons = [replies.escalation_reason(reason, names) for reason in decision.reasons]
+        detail = f"Reasons: {'; '.join(reasons)}. Items: {' | '.join(summaries)}"
         title = f"{decision.level.value.capitalize()} escalation"
         self.create_task(state, "escalate", "escalation", decision.level.value, title, detail)
         reply = ESCALATION_REPLIES[decision.level]
+        if record and any(item.kind == ItemKind.appointment_request for item in record.items):
+            reply = f"{reply} {replies.HELD_CHANGE_REPLY}"
         return {
             "replies": [*state["replies"], reply],
             "outcome": [*state["outcome"], f"escalate:{decision.level.value}"],
@@ -214,9 +236,6 @@ class WorkflowNodes:
 
     def supervisor(self, state: WorkflowState) -> dict:
         steps = state["steps"] + 1
-        stop = capped(state, steps)
-        if stop is not None:
-            return stop
         if state.get("intake") is None:
             route = "hand_off" if state.get("pending") is None else "finalize"
             return {
@@ -225,6 +244,9 @@ class WorkflowNodes:
                 "route": route,
                 "handoff_reason": "intake_failed",
             }
+        stop = capped(state, steps)
+        if stop is not None:
+            return stop
         pending, notes = state["pending"], []
         if pending is None:
             pending, notes = item_order(IntakeRecord.model_validate(state["intake"]))
@@ -258,7 +280,7 @@ class WorkflowNodes:
         chunks = [RetrievedChunk.model_validate(chunk) for chunk in found]
         result = answer_question(self.deps.llm, item.summary, chunks)
         if result.handed_off:
-            detail = f"{item.summary} (reason: {result.handoff_reason})"
+            detail = f"{item.summary} (reason: {replies.reason_label(result.handoff_reason)})"
             self.create_task(
                 state, "answer_question", "handoff", "routine", "Question for a nurse", detail
             )
@@ -267,16 +289,25 @@ class WorkflowNodes:
 
     def hand_off(self, state: WorkflowState) -> dict:
         reason = state["handoff_reason"]
-        summary = self.current_item(state).summary if state.get("current") is not None else ""
-        detail = f"{summary} (reason: {reason})"
+        summary = self.handoff_summary(state)
+        detail = f"{summary} (reason: {replies.reason_label(reason)})"
         priority = HANDOFF_PRIORITIES.get(reason, "routine")
         self.create_task(
             state, "hand_off", "handoff", priority, "Patient needs a coordinator", detail
         )
         return {
-            "replies": [*state["replies"], HANDOFF_REPLY],
+            "replies": [*state["replies"], replies.HANDOFF_REPLY],
             "outcome": [*state["outcome"], f"hand_off:{reason}"],
         }
+
+    def handoff_summary(self, state: WorkflowState) -> str:
+        if state.get("current") is not None:
+            return self.current_item(state).summary
+        if not state.get("intake"):
+            return ""
+        return " | ".join(
+            item.summary for item in IntakeRecord.model_validate(state["intake"]).items
+        )
 
     def plan_schedule(self, state: WorkflowState) -> dict:
         tools = self.tools(state)
@@ -336,8 +367,8 @@ class WorkflowNodes:
 
     def await_coordinator(self, state: WorkflowState) -> dict:
         verdict = Verdict.model_validate(state["verdict"])
-        prompt = replies.describe_change(SchedulingPlan.model_validate(state["plan"]))
-        detail = f"Patient confirmed: {prompt} (reason: {verdict.reason})"
+        prompt = replies.describe_change(SchedulingPlan.model_validate(state["plan"]), "their")
+        detail = f"Patient confirmed: {prompt} (reason: {replies.reason_label(verdict.reason)})"
         task = self.create_task(
             state, "await_coordinator", "approval", "routine", "Approve change", detail
         )
@@ -348,7 +379,7 @@ class WorkflowNodes:
         update = {**posted, "outcome": [*state["outcome"], label]}
         if decision.approved:
             return {**update, "route": "execute", "coordinator_approved": True}
-        return {**update, "route": "finalize", "replies": [replies.denied_reply(decision.note)]}
+        return {**update, "route": "finalize", "replies": [replies.DENIED_REPLY]}
 
     def execute(self, state: WorkflowState) -> dict:
         plan = SchedulingPlan.model_validate(state["plan"])

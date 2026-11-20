@@ -7,13 +7,12 @@ __pycache__/
 .DS_Store
 .env
 *.egg-info/
-data/
+/data/
 node_modules/
 frontend/dist/
 reports/live/
 AGENTS.md
 remember.md
-.github/copilot-instructions.md
 SPEC.md
 *.aux
 *.log

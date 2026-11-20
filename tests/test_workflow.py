@@ -2,10 +2,10 @@ import psycopg
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
-from careflow.agents.careplan_prompt import HANDOFF_REPLY
 from careflow.db import repository
 from careflow.graph import nodes, replies
 from careflow.graph.nodes import WorkflowDeps
+from careflow.graph.replies import HANDOFF_REPLY
 from careflow.graph.workflow import (
     NoPendingInterrupt,
     RunContext,
@@ -91,9 +91,10 @@ def test_running_example_escalates_and_does_not_reschedule(
     result = flow.start("Move my cardiology visit to Wednesday. I put on 2.5 kg since Sunday.")
     [task] = tasks(workflow_conn)
     appointment_row = repository.get_appointment(workflow_conn, "P001", "A001")
-    assert result.messages == [replies.URGENT_REPLY]
+    assert result.messages == [f"{replies.URGENT_REPLY} {replies.HELD_CHANGE_REPLY}"]
     assert (task["kind"], task["priority"]) == ("escalation", "urgent")
     assert "Move cardiology to next Wednesday" in task["text"]
+    assert "warning sign: Weight gain over 2 kg in a week" in task["text"]
     assert appointment_row["slot_id"] == "S-C01-20261111-1000"
     assert "planner" not in flow.llm.calls
 
@@ -105,6 +106,7 @@ def test_red_flag_overrides_routine_intake(workflow_conn: psycopg.Connection) ->
     assert [(t["kind"], t["priority"]) for t in tasks(workflow_conn)] == [
         ("escalation", "emergency")
     ]
+    assert 'red-flag phrase "chest pain"' in tasks(workflow_conn)[0]["text"]
 
 
 @pytest.mark.parametrize(("answer", "booked"), [(True, 1), (False, 0)])
@@ -147,6 +149,14 @@ def test_booking_past_due_date_waits_for_coordinator(
     assert [(t["kind"], t["status"]) for t in tasks(workflow_conn)] == [("approval", "resolved")]
     assert lab_bookings(workflow_conn) == booked
     assert done.status == "done"
+
+
+def test_budget_hand_off_does_not_reuse_the_current_item_key() -> None:
+    state = {"pending": [1], "current": 0, "outcome": [], "thread_id": "t"}
+    with request_budget(RequestBudget(max_seconds=0)):
+        stop = nodes.capped(state, 1)
+    assert stop["route"] == "hand_off"
+    assert nodes.task_key({**state, **stop}, "hand_off") != nodes.task_key(state, "hand_off")
 
 
 def test_replans_are_capped_then_handed_off(workflow_conn: psycopg.Connection) -> None:
@@ -223,3 +233,10 @@ def test_intake_failure_still_errs_towards_escalation(
 ) -> None:
     Flow(workflow_conn, {"intake": "not json"}).start(message)
     assert [(t["kind"], t["priority"]) for t in tasks(workflow_conn)] == [(kind, priority)]
+
+
+def test_intake_failure_under_spent_budget_stays_urgent(workflow_conn: psycopg.Connection) -> None:
+    flow = Flow(workflow_conn, {"intake": "not json"})
+    with request_budget(RequestBudget(max_seconds=0)):
+        flow.start("My chest feels odd")
+    assert [(t["kind"], t["priority"]) for t in tasks(workflow_conn)] == [("handoff", "urgent")]

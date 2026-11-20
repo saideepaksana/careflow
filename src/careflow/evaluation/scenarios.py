@@ -8,6 +8,8 @@ from pydantic import BaseModel, ConfigDict, model_validator
 from careflow.agents.scheduler import fits_part_of_day
 from careflow.config import CLINIC_TIMEZONE
 
+ERROR_REPLY_PREFIX = "error:"
+
 SCENARIOS_PATH = Path(__file__).with_name("data") / "scenarios.jsonl"
 Category = Literal[
     "routine_scheduling",
@@ -185,6 +187,9 @@ def reply_failures(expect: Expect, steps: list[StepResult]) -> list[str]:
             any(plain(option) in final for option in group) for group in expect.reply_includes
         ),
         "reply_excludes": not any(plain(text) in every for text in expect.reply_excludes),
+        "no_error": not any(
+            reply.startswith(ERROR_REPLY_PREFIX) for step in steps for reply in step.replies
+        ),
     }
     return [name for name, passed in checks.items() if not passed]
 

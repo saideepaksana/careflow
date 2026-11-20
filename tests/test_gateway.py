@@ -10,6 +10,7 @@ from careflow.llm.gateway import (
     LiteLLMClient,
     LLMBudgetExceeded,
     LLMOutputError,
+    LLMRejectedError,
     LLMUnavailableError,
     build_llm,
     complete_structured,
@@ -68,12 +69,23 @@ def test_provider_json_rejection_becomes_empty_reply(monkeypatch: pytest.MonkeyP
     assert LiteLLMClient(CLIENT_SETTINGS).complete("system", "user") == ""
 
 
-def test_other_bad_requests_still_raise(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    "error",
+    [
+        litellm.BadRequestError(message="context too long", model="m", llm_provider="groq"),
+        litellm.ContentPolicyViolationError(message="flagged", model="m", llm_provider="groq"),
+        litellm.AuthenticationError(message="bad key", model="m", llm_provider="groq"),
+        litellm.APIError(status_code=418, message="odd", model="m", llm_provider="groq"),
+    ],
+)
+def test_rejected_requests_become_unavailable(
+    monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
     def reject(**_: object) -> None:
-        raise litellm.BadRequestError(message="model not found", model="m", llm_provider="groq")
+        raise error
 
     monkeypatch.setattr(litellm, "completion", reject)
-    with pytest.raises(litellm.BadRequestError):
+    with pytest.raises(LLMRejectedError):
         LiteLLMClient(CLIENT_SETTINGS).complete("system", "user")
 
 
@@ -136,7 +148,15 @@ def test_unknown_model_costs_nothing(
     )
 
 
-@pytest.mark.parametrize("error", [litellm.RateLimitError, litellm.NotFoundError])
+@pytest.mark.parametrize(
+    "error",
+    [
+        litellm.RateLimitError,
+        litellm.BadGatewayError,
+        litellm.NotFoundError,
+        litellm.BadRequestError,
+    ],
+)
 def test_fallback_answers_when_primary_fails(
     spans: InMemorySpanExporter, monkeypatch: pytest.MonkeyPatch, error: type
 ) -> None:
@@ -158,8 +178,9 @@ def test_open_primary_breaker_does_not_block_fallback(monkeypatch: pytest.Monkey
 
 def test_both_models_failing_is_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(litellm, "completion", scripted_provider({PRIMARY, FALLBACK}, []))
-    with pytest.raises(LLMUnavailableError):
+    with pytest.raises(LLMUnavailableError) as error:
         client().complete("system", "user")
+    assert not isinstance(error.value, LLMRejectedError)
 
 
 def test_spent_budget_stops_before_calling_any_model(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -168,3 +189,16 @@ def test_spent_budget_stops_before_calling_any_model(monkeypatch: pytest.MonkeyP
     with request_budget(RequestBudget(max_tokens=0)), pytest.raises(LLMBudgetExceeded):
         client().complete("system", "user")
     assert calls == []
+
+
+@pytest.mark.parametrize("status", [498, 500, 520])
+def test_unmapped_capacity_and_server_errors_are_outages(
+    monkeypatch: pytest.MonkeyPatch, status: int
+) -> None:
+    def overloaded(**_: object) -> None:
+        raise litellm.APIError(status_code=status, message="busy", model="m", llm_provider="groq")
+
+    monkeypatch.setattr(litellm, "completion", overloaded)
+    with pytest.raises(LLMUnavailableError) as error:
+        LiteLLMClient(CLIENT_SETTINGS, sleep=lambda _: None).complete("system", "user")
+    assert not isinstance(error.value, LLMRejectedError)

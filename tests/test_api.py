@@ -1,10 +1,17 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
+from careflow.api import app as app_module
 from careflow.api.app import create_app
-from careflow.config import Settings
+from careflow.api.deps import get_checkpointer
+from careflow.config import NOTE_MAX_CHARS, Settings
+from careflow.db import repository
+from careflow.db.checkpointer import is_alive, open_checkpointer
+from careflow.db.connection import connect
+from careflow.graph.workflow import NoPendingInterrupt
 from careflow.knowledge.rerank import FakeReranker
 from careflow.memory.embeddings import FakeEmbedder
 from tests.scripted import RoleLLM, book_lab, cited_answer, intake_reply, question
@@ -88,7 +95,11 @@ def test_ending_writes_an_episode(client: TestClient) -> None:
 
 @pytest.mark.parametrize(
     ("method", "suffix", "body"),
-    [("post", "end", None), ("post", "messages", {"text": "hello again"})],
+    [
+        ("post", "end", None),
+        ("post", "messages", {"text": "hello again"}),
+        ("post", "confirm", {"approved": True}),
+    ],
 )
 def test_ended_conversation_rejects_more(
     client: TestClient, method: str, suffix: str, body: dict | None
@@ -116,7 +127,7 @@ def test_pending_confirmation_blocks_new_messages(fresh_db_url: str) -> None:
         f"/api/conversations/{conversation_id}/messages", json={"text": "hi"}, headers=headers
     )
     assert reply["status"] == "awaiting_confirmation"
-    assert reply["confirmation"].startswith("I can book laboratory")
+    assert reply["confirmation"].startswith("I can book your lab test for Tue 03 Nov")
     assert again.status_code == 409
 
 
@@ -167,7 +178,8 @@ def test_coordinator_decision_resumes_the_run(fresh_db_url: str) -> None:
     assert task["kind"] == "approval"
     assert decided.json() == {"task_id": task["id"], "run_status": "done"}
     assert repeat.status_code == 409
-    assert messages[-1]["content"].startswith("Done.")
+    assert messages[-2]["content"].startswith("Done.")
+    assert (messages[-1]["role"], messages[-1]["content"]) == ("coordinator", "fine")
 
 
 COORDINATOR = {"X-Coordinator-Token": TOKEN}
@@ -261,3 +273,113 @@ def test_api_request_holds_one_trace(fresh_db_url: str, spans) -> None:
     assert root.parent is None
     assert invocation.parent.span_id == api.context.span_id
     assert {s.context.trace_id for s in in_request} == {root.context.trace_id}
+
+
+@pytest.mark.parametrize("suffix", ["messages", "confirm", "end"])
+def test_busy_conversation_is_refused(fresh_db_url: str, suffix: str) -> None:
+    client = make_client(fresh_db_url, QUESTION_SCRIPT)
+    headers = sign_in(client, "P001")
+    conversation_id = new_conversation(client, headers)
+    body = {"messages": {"text": "hi"}, "confirm": {"approved": True}, "end": None}[suffix]
+    with connect(fresh_db_url, autocommit=True) as other:
+        with repository.conversation_lock(other, conversation_id) as locked:
+            response = client.post(
+                f"/api/conversations/{conversation_id}/{suffix}", json=body, headers=headers
+            )
+    assert locked
+    assert response.status_code == 423
+    assert response.json()["detail"] == "still working on the previous request"
+
+
+def test_lock_is_released_after_a_request(client: TestClient) -> None:
+    headers, conversation_id = chat_once(client)
+    path = f"/api/conversations/{conversation_id}/messages"
+    assert client.post(path, json={"text": "and again"}, headers=headers).status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("path", "body"),
+    [
+        ("/api/login", '{"patient_id": "P001\\u0000"}'),
+        ("/api/login", '{"patient_id": "\\ud800"}'),
+        ("messages", '{"text": "hi\\u0000there"}'),
+        ("messages", '{"text": "broken \\ud800 text"}'),
+    ],
+)
+def test_unstorable_text_is_bad_input(client: TestClient, path: str, body: str) -> None:
+    headers = {**sign_in(client, "P001"), "Content-Type": "application/json"}
+    if path == "messages":
+        path = f"/api/conversations/{new_conversation(client, headers)}/messages"
+    assert client.post(path, content=body, headers=headers).status_code == 422
+
+
+def test_non_ascii_coordinator_token_is_forbidden(client: TestClient) -> None:
+    sent = "café".encode("latin-1")
+    response = client.get("/api/coordinator/tasks", headers={"X-Coordinator-Token": sent})
+    assert response.status_code == 403
+
+
+def test_confirm_without_a_live_interrupt_is_a_conflict(
+    fresh_db_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def no_interrupt(*_: object) -> None:
+        raise NoPendingInterrupt("gone")
+
+    client = make_client(fresh_db_url, book_lab("2026-11-03"))
+    headers, conversation_id, _ = start_booking(client, "Book my blood test tomorrow")
+    monkeypatch.setattr(app_module, "resume_run", no_interrupt)
+    path = f"/api/conversations/{conversation_id}/confirm"
+    response = client.post(path, json={"approved": True}, headers=headers)
+    assert response.status_code == 409
+
+
+def test_broken_checkpointer_connection_is_reopened(fresh_db_url: str) -> None:
+    app = make_client(fresh_db_url, QUESTION_SCRIPT).app
+    request = SimpleNamespace(app=app)
+    first = get_checkpointer(request)
+    first.conn.close()
+    second = get_checkpointer(request)
+    assert second is not first
+    assert not second.conn.closed
+    second.conn.close()
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/conversations/a%00b/messages",
+        "/api/coordinator/patients/P%00/timeline",
+        "/api/coordinator/patients/P%00/progress",
+    ],
+)
+def test_unstorable_path_ids_are_rejected(client: TestClient, path: str) -> None:
+    headers = {**sign_in(client, "P001"), **COORDINATOR}
+    assert client.get(path, headers=headers).status_code == 422
+
+
+def test_overlong_coordinator_note_is_rejected(client: TestClient) -> None:
+    path = "/api/coordinator/tasks/1/decision"
+    body = {"approved": True, "note": "x" * (NOTE_MAX_CHARS + 1)}
+    assert client.post(path, json=body, headers=COORDINATOR).status_code == 422
+
+
+def test_approval_for_a_run_in_flight_is_refused(fresh_db_url: str) -> None:
+    client = make_client(fresh_db_url, book_lab("2026-11-10"))
+    headers, conversation_id, _ = start_booking(client, "Book my blood test on the 10th")
+    client.post(
+        f"/api/conversations/{conversation_id}/confirm", json={"approved": True}, headers=headers
+    )
+    [task] = client.get("/api/coordinator/tasks", headers=COORDINATOR).json()
+    with connect(fresh_db_url, autocommit=True) as conn:
+        repository.set_run_status(conn, task["thread_id"], "running")
+    path = f"/api/coordinator/tasks/{task['id']}/decision"
+    response = client.post(path, json={"approved": True, "note": ""}, headers=COORDINATOR)
+    assert response.status_code == 409
+    assert client.get("/api/coordinator/tasks", headers=COORDINATOR).json()[0]["id"] == task["id"]
+
+
+def test_checkpointer_killed_by_the_server_is_detected(fresh_db_url: str) -> None:
+    saver = open_checkpointer(fresh_db_url)
+    with connect(fresh_db_url, autocommit=True) as admin:
+        admin.execute("SELECT pg_terminate_backend(%s)", (saver.conn.info.backend_pid,))
+    assert not is_alive(saver)

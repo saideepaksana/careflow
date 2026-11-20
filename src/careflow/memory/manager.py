@@ -122,6 +122,7 @@ def write_session_memory(
 ) -> MemoryWriteResult:
     result = MemoryWriteResult()
     with conn.transaction():
+        repository.lock_patient_memory(conn, patient_id)
         episode = f"{clock.today().isoformat()}: {digest.episode}"
         embedding = embedder.embed([episode])[0]
         result.episode_id = repository.insert_memory(

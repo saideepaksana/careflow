@@ -3,8 +3,11 @@ import {
   confirmChange,
   createConversation,
   endConversation,
+  hasDetail,
+  hasStatus,
   listMessages,
   listPatients,
+  listTasks,
   login,
   Patient,
   Reply,
@@ -12,12 +15,17 @@ import {
 } from "./api";
 import Coordinator from "./Coordinator";
 import { formatTime } from "./format";
+import { CoordinatorSession, loadSession, PatientSession, saveSession, Session } from "./session";
 import { Row, Section, Shell } from "./Shell";
 
 const CHAT_POLL_MS = 10000;
+const PENDING_CONFIRMATION = "please answer the pending confirmation";
+const CONVERSATION_ENDED = "conversation has ended";
+const NOTHING_TO_CONFIRM = "nothing to confirm";
+const CONVERSATION_GONE = "That conversation is no longer available. Your next message starts a new one.";
+const CONVERSATION_CLOSED = "That conversation has ended. Your next message starts a new one.";
 
 type ChatLine = { role: "patient" | "assistant" | "coordinator"; text: string; at?: string };
-type Session = { token: string; patientId: string; patientName: string };
 
 function EmergencyNote() {
   return (
@@ -27,9 +35,10 @@ function EmergencyNote() {
   );
 }
 
-function SignIn({ onSignedIn }: { onSignedIn: (session: Session) => void }) {
+function SignIn({ onSignedIn }: { onSignedIn: (session: PatientSession) => void }) {
   const [patients, setPatients] = useState<Patient[]>([]);
   const [patientId, setPatientId] = useState("");
+  const [signingIn, setSigningIn] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -43,11 +52,22 @@ function SignIn({ onSignedIn }: { onSignedIn: (session: Session) => void }) {
 
   async function submit(event: FormEvent) {
     event.preventDefault();
+    if (signingIn) return;
+    setSigningIn(true);
+    setError("");
     try {
       const result = await login(patientId);
-      onSignedIn({ token: result.token, patientId, patientName: result.patient_name });
+      onSignedIn({
+        role: "patient",
+        token: result.token,
+        patientId,
+        patientName: result.patient_name,
+        conversationId: "",
+        pending: false,
+      });
     } catch (err) {
       setError((err as Error).message);
+      setSigningIn(false);
     }
   }
 
@@ -64,7 +84,7 @@ function SignIn({ onSignedIn }: { onSignedIn: (session: Session) => void }) {
           ))}
         </select>
       </label>
-      <button type="submit" className="primary" disabled={!patientId}>
+      <button type="submit" className="primary" disabled={!patientId || signingIn}>
         Sign in
       </button>
       {error && <p className="error">{error}</p>}
@@ -72,12 +92,24 @@ function SignIn({ onSignedIn }: { onSignedIn: (session: Session) => void }) {
   );
 }
 
-function CoordinatorSignIn({ onSignedIn }: { onSignedIn: (token: string) => void }) {
+function CoordinatorSignIn({ onSignedIn }: { onSignedIn: (session: CoordinatorSession) => void }) {
   const [token, setToken] = useState("");
+  const [checking, setChecking] = useState(false);
+  const [error, setError] = useState("");
 
-  function submit(event: FormEvent) {
+  async function submit(event: FormEvent) {
     event.preventDefault();
-    if (token.trim()) onSignedIn(token.trim());
+    const value = token.trim();
+    if (!value) return;
+    setChecking(true);
+    setError("");
+    try {
+      await listTasks(value);
+      onSignedIn({ role: "coordinator", token: value });
+    } catch (err) {
+      setError((err as Error).message);
+      setChecking(false);
+    }
   }
 
   return (
@@ -85,22 +117,22 @@ function CoordinatorSignIn({ onSignedIn }: { onSignedIn: (token: string) => void
       <h2>Coordinator sign-in</h2>
       <label>
         Coordinator token
-        <input type="password" value={token} onChange={(event) => setToken(event.target.value)} />
+        <input
+          type="password"
+          autoComplete="current-password"
+          value={token}
+          onChange={(event) => setToken(event.target.value)}
+        />
       </label>
-      <button type="submit" className="primary" disabled={!token.trim()}>
+      <button type="submit" className="primary" disabled={!token.trim() || checking}>
         Open console
       </button>
+      {error && <p className="error">{error}</p>}
     </form>
   );
 }
 
-function Welcome({
-  onPatient,
-  onCoordinator,
-}: {
-  onPatient: (session: Session) => void;
-  onCoordinator: (token: string) => void;
-}) {
+function Welcome({ notice, onSignedIn }: { notice: string; onSignedIn: (session: Session) => void }) {
   const sidebar = (
     <Section title="About">
       <p className="text">
@@ -113,25 +145,44 @@ function Welcome({
   return (
     <Shell sidebar={sidebar}>
       <div className="sign-in">
-        <SignIn onSignedIn={onPatient} />
-        <CoordinatorSignIn onSignedIn={onCoordinator} />
+        {notice && (
+          <p className="error notice" role="alert">
+            {notice}
+          </p>
+        )}
+        <SignIn onSignedIn={onSignedIn} />
+        <CoordinatorSignIn onSignedIn={onSignedIn} />
       </div>
     </Shell>
   );
 }
 
-function Chat({ session, onSignOut }: { session: Session; onSignOut: () => void }) {
-  const [conversationId, setConversationId] = useState("");
+function Chat({
+  session,
+  onUpdate,
+  onSignOut,
+}: {
+  session: PatientSession;
+  onUpdate: (patch: Partial<PatientSession>) => void;
+  onSignOut: (notice: string) => void;
+}) {
+  const { conversationId, pending } = session;
   const [lines, setLines] = useState<ChatLine[]>([]);
   const [text, setText] = useState("");
   const [waiting, setWaiting] = useState(false);
-  const [pending, setPending] = useState(false);
+  const [ending, setEnding] = useState(false);
+  const [endFailed, setEndFailed] = useState(false);
+  const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const list = useRef<HTMLUListElement>(null);
+  const restoredId = useRef(conversationId);
+  const loadTicket = useRef(0);
 
   const reload = useCallback(
     async (id: string) => {
+      const ticket = ++loadTicket.current;
       const messages = await listMessages(session.token, id);
+      if (ticket !== loadTicket.current) return;
       setLines(
         messages.map((message) => ({
           role: message.role as ChatLine["role"],
@@ -143,42 +194,101 @@ function Chat({ session, onSignOut }: { session: Session; onSignOut: () => void 
     [session.token],
   );
 
+  const clearMessages = useCallback(() => {
+    setError("");
+    setNotice("");
+    setEndFailed(false);
+  }, []);
+
+  const resetConversation = useCallback(
+    (message: string) => {
+      loadTicket.current += 1;
+      onUpdate({ conversationId: "", pending: false });
+      setLines([]);
+      clearMessages();
+      setNotice(message);
+    },
+    [onUpdate, clearMessages],
+  );
+
+  const handleGone = useCallback(
+    (err: unknown): boolean => {
+      if (hasStatus(err, 401)) onSignOut((err as Error).message);
+      else if (hasStatus(err, 404)) resetConversation(CONVERSATION_GONE);
+      else if (hasDetail(err, CONVERSATION_ENDED)) resetConversation(CONVERSATION_CLOSED);
+      else return false;
+      return true;
+    },
+    [onSignOut, resetConversation],
+  );
+
+  const fail = useCallback(
+    (err: unknown) => {
+      if (handleGone(err)) return;
+      if (hasDetail(err, PENDING_CONFIRMATION)) {
+        onUpdate({ pending: true });
+        return;
+      }
+      if (hasDetail(err, NOTHING_TO_CONFIRM)) onUpdate({ pending: false });
+      setError((err as Error).message);
+    },
+    [handleGone, onUpdate],
+  );
+
   useEffect(() => {
-    if (!conversationId || waiting) return;
-    const timer = window.setInterval(() => reload(conversationId).catch(() => undefined), CHAT_POLL_MS);
+    if (restoredId.current) reload(restoredId.current).catch(fail);
+  }, [reload, fail]);
+
+  useEffect(() => {
+    if (!conversationId || waiting || ending) return;
+    const timer = window.setInterval(() => reload(conversationId).catch(handleGone), CHAT_POLL_MS);
     return () => window.clearInterval(timer);
-  }, [conversationId, waiting, reload]);
+  }, [conversationId, waiting, ending, reload, handleGone]);
 
   useEffect(() => {
     list.current?.scrollTo({ top: list.current.scrollHeight });
   }, [lines, waiting, pending]);
 
+  function beginRequest(line: string) {
+    loadTicket.current += 1;
+    setWaiting(true);
+    clearMessages();
+    setLines((current) => [...current, { role: "patient", text: line }]);
+  }
+
   async function showReply(id: string, result: Reply) {
-    setPending(result.confirmation !== null);
+    onUpdate({ pending: result.confirmation !== null });
     await reload(id);
   }
 
-  async function startNew() {
-    if (conversationId) {
-      setWaiting(true);
-      await endConversation(session.token, conversationId).catch(() => undefined);
-      setWaiting(false);
+  async function endCurrent(): Promise<boolean> {
+    setEnding(true);
+    try {
+      await endConversation(session.token, conversationId);
+      return true;
+    } catch (err) {
+      if (hasStatus(err, 404) || hasStatus(err, 409)) return true;
+      fail(err);
+      setEndFailed(hasStatus(err, 503));
+      return false;
+    } finally {
+      setEnding(false);
     }
-    setConversationId("");
-    setLines([]);
-    setPending(false);
-    setError("");
+  }
+
+  async function startNew() {
+    clearMessages();
+    if (conversationId && !(await endCurrent())) return;
+    resetConversation("");
   }
 
   async function answer(approved: boolean) {
-    setWaiting(true);
-    setError("");
-    setLines((current) => [...current, { role: "patient", text: approved ? "Yes" : "No" }]);
+    beginRequest(approved ? "Yes" : "No");
     try {
       await showReply(conversationId, await confirmChange(session.token, conversationId, approved));
     } catch (err) {
       setLines((current) => current.slice(0, -1));
-      setError((err as Error).message);
+      fail(err);
     } finally {
       setWaiting(false);
     }
@@ -188,18 +298,16 @@ function Chat({ session, onSignOut }: { session: Session; onSignOut: () => void 
     event.preventDefault();
     const message = text.trim();
     if (!message) return;
-    setWaiting(true);
-    setError("");
-    setLines((current) => [...current, { role: "patient", text: message }]);
+    beginRequest(message);
     setText("");
     try {
       const id = conversationId || (await createConversation(session.token)).conversation_id;
-      setConversationId(id);
+      onUpdate({ conversationId: id });
       await showReply(id, await sendMessage(session.token, id, message));
     } catch (err) {
       setLines((current) => current.slice(0, -1));
       setText(message);
-      setError((err as Error).message);
+      fail(err);
     } finally {
       setWaiting(false);
     }
@@ -214,10 +322,10 @@ function Chat({ session, onSignOut }: { session: Session; onSignOut: () => void 
           <Row label="Conversation" value={conversationId ? "Active" : "Not started"} />
         </div>
         <div className="actions">
-          <button type="button" onClick={startNew} disabled={waiting}>
-            New conversation
+          <button type="button" onClick={startNew} disabled={waiting || ending}>
+            {ending ? "Saving..." : "New conversation"}
           </button>
-          <button type="button" onClick={onSignOut}>
+          <button type="button" onClick={() => onSignOut("")}>
             Sign out
           </button>
         </div>
@@ -232,10 +340,11 @@ function Chat({ session, onSignOut }: { session: Session; onSignOut: () => void 
   return (
     <Shell sidebar={sidebar}>
       <div className="chat">
-        <ul className="messages" ref={list}>
+        <ul className="messages" ref={list} aria-live="polite">
           {lines.length === 0 && !waiting && <li className="empty">No messages yet.</li>}
           {lines.map((line, index) => (
             <li key={index} className={line.role}>
+              {line.role === "coordinator" && <span className="speaker">Care team</span>}
               {line.text}
               {line.at && <span className="time">{formatTime(line.at)}</span>}
             </li>
@@ -252,10 +361,10 @@ function Chat({ session, onSignOut }: { session: Session; onSignOut: () => void 
           <div className="confirm-bar">
             <span>Confirm this change?</span>
             <div className="actions">
-              <button type="button" onClick={() => answer(false)} disabled={waiting}>
+              <button type="button" onClick={() => answer(false)} disabled={waiting || ending}>
                 No
               </button>
-              <button type="button" className="primary" onClick={() => answer(true)} disabled={waiting}>
+              <button type="button" className="primary" onClick={() => answer(true)} disabled={waiting || ending}>
                 Yes
               </button>
             </div>
@@ -269,20 +378,51 @@ function Chat({ session, onSignOut }: { session: Session; onSignOut: () => void 
             maxLength={2000}
             disabled={pending}
           />
-          <button type="submit" className="primary" disabled={waiting || pending}>
+          <button type="submit" className="primary" disabled={waiting || ending || pending}>
             Send
           </button>
         </form>
-        {error && <p className="error">{error}</p>}
+        {notice && (
+          <p className="muted" role="status">
+            {notice}
+          </p>
+        )}
+        {error && (
+          <p className="error" role="alert">
+            {error}
+            {endFailed && (
+              <button type="button" onClick={() => resetConversation("")}>
+                Start anyway
+              </button>
+            )}
+          </p>
+        )}
       </div>
     </Shell>
   );
 }
 
 export default function App() {
-  const [session, setSession] = useState<Session | null>(null);
-  const [coordinatorToken, setCoordinatorToken] = useState("");
-  if (session) return <Chat session={session} onSignOut={() => setSession(null)} />;
-  if (coordinatorToken) return <Coordinator token={coordinatorToken} onSignOut={() => setCoordinatorToken("")} />;
-  return <Welcome onPatient={setSession} onCoordinator={setCoordinatorToken} />;
+  const [session, setSession] = useState<Session | null>(loadSession);
+  const [notice, setNotice] = useState("");
+
+  useEffect(() => saveSession(session), [session]);
+
+  const signIn = useCallback((next: Session) => {
+    setNotice("");
+    setSession(next);
+  }, []);
+
+  const signOut = useCallback((message: string) => {
+    setNotice(message);
+    setSession(null);
+  }, []);
+
+  const updatePatient = useCallback((patch: Partial<PatientSession>) => {
+    setSession((current) => (current?.role === "patient" ? { ...current, ...patch } : current));
+  }, []);
+
+  if (session?.role === "patient") return <Chat session={session} onUpdate={updatePatient} onSignOut={signOut} />;
+  if (session?.role === "coordinator") return <Coordinator token={session.token} onSignOut={signOut} />;
+  return <Welcome notice={notice} onSignedIn={signIn} />;
 }

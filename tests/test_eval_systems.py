@@ -10,7 +10,7 @@ from careflow.evaluation.e2e import CellContext, eval_settings, run_cell
 from careflow.evaluation.scenarios import load_scenarios
 from careflow.evaluation.systems import RecordingLLM
 from careflow.knowledge.rerank import FakeReranker
-from careflow.llm.gateway import LLMBudgetExceeded, LLMUnavailableError
+from careflow.llm.gateway import LLMBudgetExceeded, LLMRejectedError, LLMUnavailableError
 from careflow.memory.embeddings import FakeEmbedder
 from careflow.observability.budget import RequestBudget, request_budget
 from careflow.observability.meter import UsageMeter
@@ -121,6 +121,12 @@ def test_system_errors_are_scored_not_raised(fresh_db_url: str) -> None:
     row = run_cell(context(fresh_db_url, BaselineLLM([])), SCENARIOS["q-01"], "baseline")
     assert row["valid"] and not row["success"]
     assert row["steps"][0]["replies"] == ["error:IndexError"]
+    assert "no_error" in row["failed_checks"]
+
+
+def test_crash_fails_a_scenario_without_reply_checks(fresh_db_url: str) -> None:
+    row = run_cell(context(fresh_db_url, BaselineLLM([])), SCENARIOS["inj-01"], "baseline")
+    assert row["failed_checks"] == ["no_error"]
 
 
 class Failing:
@@ -132,7 +138,12 @@ class Failing:
 
 
 @pytest.mark.parametrize(
-    ("error", "counted"), [(LLMUnavailableError("429"), 1), (LLMBudgetExceeded("spent"), 0)]
+    ("error", "counted"),
+    [
+        (LLMUnavailableError("429"), 1),
+        (LLMBudgetExceeded("spent"), 0),
+        (LLMRejectedError("content filter"), 0),
+    ],
 )
 def test_recording_llm_counts_only_provider_outages(error: Exception, counted: int) -> None:
     llm = RecordingLLM(Failing(error), UNLIMITED)

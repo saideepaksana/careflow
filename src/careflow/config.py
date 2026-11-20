@@ -59,6 +59,11 @@ MORNING_END_HOUR = 12
 TIMELINE_LIMIT = 200
 REQUEST_TOKEN_BUDGET = 30000
 REQUEST_TIME_BUDGET_SECONDS = 120
+RECOVER_AFTER_SECONDS = 300
+OUTAGE_STATUS_CODES = (408, 498)
+OUTAGE_STATUS_MIN = 500
+ID_MAX_CHARS = 64
+NOTE_MAX_CHARS = 2000
 SERVICE_NAME = "careflow"
 EVAL_TRIALS = 3
 EVAL_TOKENS_PER_MINUTE = 6000
@@ -71,31 +76,62 @@ JUDGE_EVIDENCE_CHUNKS = 8
 RED_FLAG_TERMS = (
     "chest pain",
     "chest tightness",
-    "can't breathe",
-    "cannot breathe",
+    "chest hurts",
+    "pain in my chest",
+    "chest feels tight",
+    "tight chest",
+    "heart attack",
+    "cant breathe",
+    "cant breath",
+    "couldnt breathe",
+    "unable to breathe",
+    "hard to breathe",
+    "difficulty breathing",
+    "trouble breathing",
     "severe breathlessness",
     "struggling to breathe",
+    "short of breath at rest",
+    "shortness of breath at rest",
     "fainted",
+    "fainting",
+    "feel faint",
     "passed out",
+    "passing out",
+    "blacked out",
+    "collapsed",
     "unconscious",
     "blue lips",
+    "lips look blue",
+    "lips are blue",
+    "lips turning blue",
+    "lips turned blue",
+    "lips have turned blue",
+    "lips have gone blue",
     "new confusion",
     "suddenly confused",
     "seizure",
     "stroke",
     "face drooping",
+    "slurred speech",
     "coughing blood",
     "coughing up blood",
     "vomiting blood",
-    "suicid",
+    "suicide",
+    "suicidal",
     "kill myself",
+    "hurt myself",
+    "end my life",
+    "want to die",
+    "dont want to live",
+    "overdose",
+    "overdosed",
+    "lips are bluish",
 )
 CLINICAL_TERMS = (
     "mg",
     "dose",
     "dosage",
     "tablet",
-    "pill",
     "medic",
     "drug",
     "insulin",
@@ -121,6 +157,17 @@ CLINICAL_TERMS = (
     "nause",
     "vomit",
     "surgery",
+    "stopped taking",
+    "blood thinner",
+    "antibiotic",
+    "furosemide",
+    "metoprolol",
+    "warfarin",
+    "metformin",
+    "heart failure",
+    "diabetes",
+    "copd",
+    "pneumonia",
 )
 
 

@@ -6,7 +6,7 @@
   --border-strong: #d3d8d5;
   --text: #1b1d1c;
   --muted: #696f6c;
-  --subtle: #9aa09d;
+  --subtle: #6b716e;
   --accent: #0f766e;
   --accent-strong: #0b5f58;
   --accent-soft: #eef6f5;
@@ -53,14 +53,6 @@ h2 {
   font-size: 12px;
 }
 
-.mono {
-  font-family: ui-monospace, "SF Mono", "Cascadia Code", Menlo, monospace;
-}
-
-.nowrap {
-  white-space: nowrap;
-}
-
 .center {
   text-align: center;
   padding: 24px 0;
@@ -77,6 +69,7 @@ h2 {
 .shell {
   display: flex;
   min-height: 100vh;
+  min-width: 1100px;
 }
 
 .sidebar {
@@ -218,6 +211,10 @@ h2 {
   background: var(--green);
 }
 
+.dot.blank {
+  visibility: hidden;
+}
+
 .patients {
   list-style: none;
   margin: 0 -10px;
@@ -243,8 +240,15 @@ h2 {
   flex-direction: column;
 }
 
-.patients button.selected {
+.patients button.selected,
+.patients button.selected:hover:not(:disabled) {
   background: var(--accent-soft);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.patients button.selected .patient-name {
+  color: var(--accent-strong);
+  font-weight: 600;
 }
 
 .patient-name {
@@ -282,6 +286,10 @@ h2 {
   padding-top: 10vh;
 }
 
+.notice {
+  grid-column: 1 / -1;
+}
+
 label {
   display: flex;
   flex-direction: column;
@@ -302,6 +310,12 @@ button {
   background: var(--surface);
 }
 
+select,
+input {
+  height: 39px;
+  box-sizing: border-box;
+}
+
 input::placeholder {
   color: var(--subtle);
 }
@@ -311,6 +325,11 @@ select:focus-visible,
 button:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
+}
+
+button.primary:focus-visible {
+  outline: 2px solid var(--accent-strong);
+  outline-offset: 2px;
 }
 
 button {
@@ -344,9 +363,13 @@ button.primary:hover:not(:disabled) {
   font-size: 14px;
 }
 
+.error button {
+  margin-left: 12px;
+}
+
 .chat {
   max-width: 760px;
-  height: calc(100vh - 64px);
+  height: calc(100dvh - 64px);
   margin: 0 auto;
   display: flex;
   flex-direction: column;
@@ -391,6 +414,13 @@ button.primary:hover:not(:disabled) {
   align-self: flex-start;
   background: var(--sunken);
   border-left: 3px solid var(--amber);
+}
+
+.speaker {
+  display: block;
+  margin-bottom: 2px;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .messages .empty {
@@ -475,6 +505,12 @@ button.primary:hover:not(:disabled) {
   gap: 20px;
 }
 
+.detail {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
 .queue {
   list-style: none;
   margin: 0;
@@ -529,14 +565,44 @@ button.primary:hover:not(:disabled) {
 
 .table {
   width: 100%;
+  table-layout: fixed;
   border-collapse: collapse;
   font-size: 14px;
 }
 
+.progress th:nth-child(2) {
+  width: 100px;
+}
+
+.progress th:nth-child(3) {
+  width: 190px;
+}
+
+.progress th:nth-child(4) {
+  width: 100px;
+}
+
+.timeline td:first-child {
+  width: 170px;
+}
+
+.table th,
 .table td {
   padding: 8px 12px 8px 0;
-  border-top: 1px solid var(--border);
+  text-align: left;
   vertical-align: top;
+}
+
+.table th {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--subtle);
+}
+
+.table td {
+  border-top: 1px solid var(--border);
 }
 
 .table tr:first-child td {
@@ -552,65 +618,6 @@ button.primary:hover:not(:disabled) {
 }
 
 .timeline td:nth-child(2) {
+  width: 190px;
   font-weight: 500;
-}
-
-@media (max-width: 860px) {
-  .shell {
-    flex-direction: column;
-  }
-
-  .sidebar {
-    width: auto;
-    height: auto;
-    position: static;
-    border-right: 0;
-    border-bottom: 1px solid var(--border);
-  }
-
-  .sidebar-foot {
-    display: none;
-  }
-
-  .main {
-    padding: 16px;
-  }
-
-  .sign-in {
-    grid-template-columns: 1fr;
-    padding-top: 0;
-  }
-
-  .chat {
-    height: 75vh;
-    padding: 14px;
-  }
-
-  .panel {
-    padding: 16px;
-  }
-
-  .task-actions {
-    flex-wrap: wrap;
-  }
-
-  .table td {
-    display: block;
-    padding: 2px 0;
-    border: 0;
-  }
-
-  .table tr {
-    display: block;
-    padding: 8px 0;
-    border-top: 1px solid var(--border);
-  }
-
-  .table tr:first-child {
-    border-top: 0;
-  }
-
-  .table td.status-cell {
-    display: flex;
-  }
 }

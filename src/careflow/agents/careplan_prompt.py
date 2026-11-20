@@ -1,5 +1,6 @@
 HANDOFF_REPLY = (
-    "I can't answer that from your care documents, so I've passed your question to your care team."
+    "I can't answer that from your care documents, so I've passed your question to your care team. "
+    "If this is an emergency, call 112."
 )
 
 CAREPLAN_SYSTEM_PROMPT = """You answer a recently discharged patient's question using only the sources given: passages from their own current care documents and from hospital guides that apply to them.

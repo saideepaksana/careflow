@@ -1,10 +1,13 @@
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import date
 
 import psycopg
 from psycopg.types.json import Jsonb
 
 from careflow.config import CLINIC_TIMEZONE, FREE_SLOTS_LIMIT
+
+CONVERSATION_LOCK, ACTION_LOCK, APPOINTMENT_ID_LOCK, MEMORY_LOCK = 1, 2, 3, 4
 
 
 class ActionRejected(Exception):
@@ -55,6 +58,17 @@ def find_free_slots(
     ).fetchall()
 
 
+def stored_action_result(
+    conn: psycopg.Connection, patient_id: str, idempotency_key: str
+) -> dict | None:
+    conn.execute("SELECT pg_advisory_xact_lock(%s, hashtext(%s))", (ACTION_LOCK, idempotency_key))
+    row = conn.execute(
+        "SELECT result FROM action_results WHERE idempotency_key = %s AND patient_id = %s",
+        (idempotency_key, patient_id),
+    ).fetchone()
+    return row["result"] if row else None
+
+
 def run_action(
     conn: psycopg.Connection,
     patient_id: str,
@@ -62,13 +76,11 @@ def run_action(
     idempotency_key: str,
     work: Callable[[], dict],
 ) -> dict:
-    stored = conn.execute(
-        "SELECT result FROM action_results WHERE idempotency_key = %s", (idempotency_key,)
-    ).fetchone()
-    if stored is not None:
-        return {**stored["result"], "replayed": True}
     try:
         with conn.transaction():
+            stored = stored_action_result(conn, patient_id, idempotency_key)
+            if stored is not None:
+                return {**stored, "replayed": True}
             result = {"ok": True, **work(), "replayed": False}
             conn.execute(
                 "INSERT INTO action_results (idempotency_key, patient_id, action, result)"
@@ -81,6 +93,8 @@ def run_action(
 
 
 def next_appointment_id(conn: psycopg.Connection) -> str:
+    """Call inside a transaction: the lock holds until it ends, so concurrent bookings queue."""
+    conn.execute("SELECT pg_advisory_xact_lock(%s, 0)", (APPOINTMENT_ID_LOCK,))
     row = conn.execute(
         "SELECT coalesce(max(substring(id FROM 2)::int), 0) + 1 AS n FROM appointments"
     ).fetchone()
@@ -438,11 +452,29 @@ def pending_confirmation(conn: psycopg.Connection, conversation_id: str) -> str 
     return row["thread_id"] if row else None
 
 
-def runs_with_status(conn: psycopg.Connection, status: str) -> list[str]:
+def stale_runs(conn: psycopg.Connection, status: str, older_than_seconds: int) -> list[str]:
     rows = conn.execute(
-        "SELECT thread_id FROM workflow_runs WHERE status = %s ORDER BY created_at", (status,)
+        "SELECT thread_id FROM workflow_runs WHERE status = %s"
+        " AND updated_at <= now() - make_interval(secs => %s) ORDER BY created_at",
+        (status, older_than_seconds),
     ).fetchall()
     return [row["thread_id"] for row in rows]
+
+
+@contextmanager
+def conversation_lock(conn: psycopg.Connection, conversation_id: str) -> Iterator[bool]:
+    """Session lock so one request at a time changes a conversation; yields False if busy."""
+    row = conn.execute(
+        "SELECT pg_try_advisory_lock(%s, hashtext(%s)) AS locked",
+        (CONVERSATION_LOCK, conversation_id),
+    ).fetchone()
+    try:
+        yield row["locked"]
+    finally:
+        if row["locked"]:
+            conn.execute(
+                "SELECT pg_advisory_unlock(%s, hashtext(%s))", (CONVERSATION_LOCK, conversation_id)
+            )
 
 
 def last_message_id(conn: psycopg.Connection, conversation_id: str) -> int:
@@ -637,3 +669,8 @@ def task_snapshot(conn: psycopg.Connection, patient_id: str) -> list[dict]:
         " WHERE patient_id = %s ORDER BY id",
         (patient_id,),
     ).fetchall()
+
+
+def lock_patient_memory(conn: psycopg.Connection, patient_id: str) -> None:
+    """Call inside a transaction: memory writes for one patient queue until it ends."""
+    conn.execute("SELECT pg_advisory_xact_lock(%s, hashtext(%s))", (MEMORY_LOCK, patient_id))

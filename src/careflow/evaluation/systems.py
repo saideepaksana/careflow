@@ -17,8 +17,9 @@ from careflow.config import (
 )
 from careflow.db import repository
 from careflow.db.connection import connect
+from careflow.evaluation.scenarios import ERROR_REPLY_PREFIX
 from careflow.knowledge.rerank import Reranker
-from careflow.llm.gateway import LLM, LLMBudgetExceeded, LLMUnavailableError
+from careflow.llm.gateway import LLM, LLMBudgetExceeded, LLMRejectedError, LLMUnavailableError
 from careflow.memory.embeddings import Embedder
 from careflow.memory.manager import recall
 from careflow.memory.working import render_summary
@@ -44,7 +45,7 @@ class RecordingLLM:
         self.wait_for((len(system) + len(user)) // CHARS_PER_TOKEN + EVAL_OUTPUT_TOKEN_ESTIMATE)
         try:
             return self.inner.complete(system, user)
-        except LLMBudgetExceeded:
+        except (LLMBudgetExceeded, LLMRejectedError):
             raise
         except LLMUnavailableError:
             self.unavailable += 1
@@ -127,7 +128,7 @@ class CareFlowSystem:
 
 def reply_text(response: object) -> str:
     if response.status_code != 200:
-        return f"error:{response.status_code}"
+        return f"{ERROR_REPLY_PREFIX}{response.status_code}"
     return response.json()["reply"]
 
 

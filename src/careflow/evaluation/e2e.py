@@ -5,6 +5,7 @@ from careflow.config import Settings
 from careflow.db import repository
 from careflow.db.connection import connect
 from careflow.evaluation.scenarios import (
+    ERROR_REPLY_PREFIX,
     PRIORITY_RANK,
     Observation,
     Scenario,
@@ -37,7 +38,7 @@ def run_step(system: object, step: Step) -> tuple[list[str], bool]:
     try:
         return action() if step.kind == "end_session" else action(value)
     except Exception as error:  # evaluation runner boundary: a system error is a scored failure
-        return [f"error:{type(error).__name__}"], False
+        return [f"{ERROR_REPLY_PREFIX}{type(error).__name__}"], False
 
 
 def observe_step(ctx: CellContext, system: object, step: Step, patient_id: str) -> StepResult:

@@ -26,6 +26,21 @@ export type ProgressItem = {
 };
 export type Decision = { task_id: number; run_status: string | null };
 
+export class ApiError extends Error {
+  readonly status: number;
+  readonly detail: string;
+
+  constructor(status: number, detail: string) {
+    super(errorText(status, detail));
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
+export const hasStatus = (error: unknown, status: number) => error instanceof ApiError && error.status === status;
+
+export const hasDetail = (error: unknown, detail: string) => error instanceof ApiError && error.detail === detail;
+
 async function request<T>(
   path: string,
   init: RequestInit = {},
@@ -36,16 +51,33 @@ async function request<T>(
   if (token) headers.Authorization = `Bearer ${token}`;
   if (coordinatorToken) headers["X-Coordinator-Token"] = coordinatorToken;
   const response = await fetch(`/api${path}`, { ...init, headers });
-  if (!response.ok) throw new Error(errorText(response.status));
+  if (!response.ok) throw new ApiError(response.status, await errorDetail(response));
   return response.json() as Promise<T>;
 }
 
-function errorText(status: number): string {
+async function errorDetail(response: Response): Promise<string> {
+  try {
+    const body: unknown = await response.json();
+    const detail = (body as { detail?: unknown }).detail;
+    return typeof detail === "string" ? detail : "";
+  } catch {
+    return "";
+  }
+}
+
+function errorText(status: number, detail: string): string {
   if (status === 401) return "Your session has ended. Please sign in again.";
   if (status === 403) return "That token was not accepted.";
+  if (status === 404 && detail === "conversation not found") return "That conversation is no longer available.";
+  if (status === 404) return "That item could not be found. Please refresh and try again.";
+  if (status === 409 && detail === "the request is still in progress")
+    return "This request is still being processed. Please try again in a few minutes.";
   if (status === 409) return "That request is no longer waiting for an answer.";
+  if (status === 422) return "That message could not be sent. Please check it and try again.";
+  if (status === 423) return "This conversation is busy. Please try again in a moment.";
+  if (status === 503 && detail === "memory could not be written") return "This conversation could not be saved.";
   if (status >= 500) return "Something went wrong on our side. Please try again in a moment.";
-  return `The request could not be completed (${status}).`;
+  return "The request could not be completed. Please try again.";
 }
 
 export const listPatients = () => request<Patient[]>("/patients");

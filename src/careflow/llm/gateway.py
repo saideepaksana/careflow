@@ -6,7 +6,14 @@ from typing import Protocol, TypeVar
 import litellm
 from pydantic import BaseModel, ValidationError
 
-from careflow.config import LLM_TIMEOUT_SECONDS, MAX_REPAIRS, REPAIR_ERROR_MAX_CHARS, Settings
+from careflow.config import (
+    LLM_TIMEOUT_SECONDS,
+    MAX_REPAIRS,
+    OUTAGE_STATUS_CODES,
+    OUTAGE_STATUS_MIN,
+    REPAIR_ERROR_MAX_CHARS,
+    Settings,
+)
 from careflow.llm.reliability import CircuitBreaker, CircuitOpenError, call_with_retry
 from careflow.observability.budget import RequestBudget, current_budget
 from careflow.observability.tracing import Span, span
@@ -21,8 +28,18 @@ TRANSIENT_ERRORS = (
     litellm.Timeout,
     litellm.InternalServerError,
     litellm.ServiceUnavailableError,
+    litellm.BadGatewayError,
 )
-FALLBACK_ERRORS = (*TRANSIENT_ERRORS, CircuitOpenError, litellm.NotFoundError)
+OUTAGE_ERRORS = (*TRANSIENT_ERRORS, CircuitOpenError)
+REJECTED_ERRORS = (
+    litellm.NotFoundError,
+    litellm.BadRequestError,
+    litellm.AuthenticationError,
+    litellm.PermissionDeniedError,
+    litellm.UnprocessableEntityError,
+    litellm.APIResponseValidationError,
+    litellm.APIError,
+)
 JSON_VALIDATE_FAILED = "json_validate_failed"
 
 
@@ -40,6 +57,10 @@ class LLMUnavailableError(Exception):
 
 class LLMBudgetExceeded(LLMUnavailableError):
     pass
+
+
+class LLMRejectedError(LLMUnavailableError):
+    """Every model refused the request itself, as opposed to a provider outage."""
 
 
 def provider_name(model: str) -> str:
@@ -60,6 +81,14 @@ def response_usage(response: object) -> tuple[int, int]:
     return (getattr(usage, "prompt_tokens", 0) or 0, getattr(usage, "completion_tokens", 0) or 0)
 
 
+def is_outage_status(error: Exception) -> bool:
+    """litellm maps unrecognised provider statuses to APIError, including capacity and 5xx."""
+    status = getattr(error, "status_code", None)
+    if not isinstance(error, litellm.APIError) or status is None:
+        return False
+    return status in OUTAGE_STATUS_CODES or status >= OUTAGE_STATUS_MIN
+
+
 class LiteLLMClient:
     def __init__(
         self,
@@ -74,12 +103,17 @@ class LiteLLMClient:
         self.breakers = {model: CircuitBreaker(TRANSIENT_ERRORS, clock) for model in self.models}
 
     def complete(self, system: str, user: str) -> str:
+        outage = False
         for model in self.models:
             try:
                 return self.complete_with(model, system, user)
-            except FALLBACK_ERRORS:
-                continue
-        raise LLMUnavailableError("all models failed")
+            except OUTAGE_ERRORS:
+                outage = True
+            except REJECTED_ERRORS as error:
+                outage = outage or is_outage_status(error)
+        if outage:
+            raise LLMUnavailableError("all models failed")
+        raise LLMRejectedError("every model rejected the request")
 
     def complete_with(self, model: str, system: str, user: str) -> str:
         attributes = {

@@ -1,0 +1,60 @@
+{"id": "patient-01", "patient_id": "P001", "question": "When do I need to see the heart doctor?", "relevant": ["P001-plan-v2#follow-up-visits"], "kind": "patient"}
+{"id": "patient-02", "patient_id": "P001", "question": "What time of day should I take my water tablet?", "relevant": ["P001-plan-v2#medicines"], "kind": "patient"}
+{"id": "patient-03", "patient_id": "P001", "question": "How should I weigh myself each day?", "relevant": ["P001-plan-v2#daily-weight"], "kind": "patient"}
+{"id": "patient-04", "patient_id": "P001", "question": "What was my weight when I left the hospital?", "relevant": ["P001-summary-v1#condition-at-discharge", "P001-plan-v2#daily-weight"], "kind": "patient"}
+{"id": "patient-05", "patient_id": "P001", "question": "Which phone number do I call on a Sunday?", "relevant": ["P001-summary-v1#who-to-contact"], "kind": "patient"}
+{"id": "patient-06", "patient_id": "P002", "question": "How often do I use the tiotropium inhaler?", "relevant": ["P002-plan-v1#medicines"], "kind": "patient"}
+{"id": "patient-07", "patient_id": "P002", "question": "When should I check my oxygen level?", "relevant": ["P002-plan-v1#oxygen-readings"], "kind": "patient"}
+{"id": "patient-08", "patient_id": "P002", "question": "What oxygen reading means I should call the nurse?", "relevant": ["P002-plan-v1#warning-signs"], "kind": "patient"}
+{"id": "patient-09", "patient_id": "P002", "question": "When is my lung clinic follow-up due?", "relevant": ["P002-plan-v1#follow-up-visits"], "kind": "patient"}
+{"id": "patient-10", "patient_id": "P002", "question": "What was my oxygen level when I was discharged?", "relevant": ["P002-summary-v1#condition-at-discharge"], "kind": "patient"}
+{"id": "patient-11", "patient_id": "P003", "question": "Do I take my metformin before or after food?", "relevant": ["P003-plan-v1#medicines"], "kind": "patient"}
+{"id": "patient-12", "patient_id": "P003", "question": "When should I check my blood sugar?", "relevant": ["P003-plan-v1#sugar-checks"], "kind": "patient"}
+{"id": "patient-13", "patient_id": "P003", "question": "What sugar level should make me call the nurse?", "relevant": ["P003-plan-v1#warning-signs"], "kind": "patient"}
+{"id": "patient-14", "patient_id": "P003", "question": "Why was I admitted to hospital?", "relevant": ["P003-summary-v1#reason-for-admission"], "kind": "patient"}
+{"id": "patient-15", "patient_id": "P003", "question": "How much rice can I eat?", "relevant": ["P003-plan-v1#eating"], "kind": "patient"}
+{"id": "patient-16", "patient_id": "P004", "question": "When will my staples come out?", "relevant": ["P004-plan-v1#follow-up-visits"], "kind": "patient"}
+{"id": "patient-17", "patient_id": "P004", "question": "Can I take a shower?", "relevant": ["P004-plan-v1#wound-care"], "kind": "patient"}
+{"id": "patient-18", "patient_id": "P004", "question": "How long do I keep taking apixaban?", "relevant": ["P004-plan-v1#medicines"], "kind": "patient"}
+{"id": "patient-19", "patient_id": "P004", "question": "Can I cross my legs when sitting?", "relevant": ["P004-plan-v1#hip-precautions", "protocol-hip-replacement#why-hip-precautions-matter"], "kind": "patient"}
+{"id": "patient-20", "patient_id": "P004", "question": "How should I sleep at night?", "relevant": ["P004-plan-v1#hip-precautions"], "kind": "patient"}
+{"id": "patient-21", "patient_id": "P005", "question": "How many days do I take amoxicillin?", "relevant": ["P005-plan-v1#medicines"], "kind": "patient"}
+{"id": "patient-22", "patient_id": "P005", "question": "When can I go back to work?", "relevant": ["P005-plan-v1#recovery-and-work"], "kind": "patient"}
+{"id": "patient-23", "patient_id": "P005", "question": "How long will my cough last?", "relevant": ["P005-plan-v1#recovery-and-work", "protocol-pneumonia#what-to-expect"], "kind": "patient"}
+{"id": "patient-24", "patient_id": "P005", "question": "What temperature should make me call the nurse?", "relevant": ["P005-plan-v1#warning-signs"], "kind": "patient"}
+{"id": "patient-25", "patient_id": "P005", "question": "Why do I need another chest X-ray?", "relevant": ["protocol-pneumonia#why-the-follow-up-x-ray-matters", "P005-plan-v1#follow-up-visits"], "kind": "patient"}
+{"id": "protocol-01", "patient_id": "P001", "question": "Why does my weight matter so much?", "relevant": ["protocol-heart-failure#why-daily-weighing-matters"], "kind": "protocol"}
+{"id": "protocol-02", "patient_id": "P001", "question": "Can I drink alcohol?", "relevant": ["protocol-heart-failure#alcohol"], "kind": "protocol"}
+{"id": "protocol-03", "patient_id": "P001", "question": "What does heart failure actually mean?", "relevant": ["protocol-heart-failure#what-heart-failure-means"], "kind": "protocol"}
+{"id": "protocol-04", "patient_id": "P002", "question": "How do I use my inhaler properly?", "relevant": ["protocol-copd#using-your-inhaler"], "kind": "protocol"}
+{"id": "protocol-05", "patient_id": "P002", "question": "What can I do when I feel short of breath?", "relevant": ["protocol-copd#breathing-techniques", "P002-plan-v1#activity"], "kind": "protocol"}
+{"id": "protocol-06", "patient_id": "P002", "question": "Why does my finger monitor sometimes show a low number?", "relevant": ["protocol-copd#oxygen-level-readings"], "kind": "protocol"}
+{"id": "protocol-07", "patient_id": "P003", "question": "What do I do if my sugar goes low?", "relevant": ["protocol-diabetes#low-blood-sugar"], "kind": "protocol"}
+{"id": "protocol-08", "patient_id": "P003", "question": "What should I do when I am sick and cannot eat?", "relevant": ["protocol-diabetes#sick-days"], "kind": "protocol"}
+{"id": "protocol-09", "patient_id": "P003", "question": "What HbA1c should I aim for?", "relevant": ["protocol-diabetes#hba1c"], "kind": "protocol"}
+{"id": "protocol-10", "patient_id": "P004", "question": "How do I go up and down stairs?", "relevant": ["protocol-hip-replacement#stairs"], "kind": "protocol"}
+{"id": "protocol-11", "patient_id": "P004", "question": "What exercises should I do?", "relevant": ["protocol-hip-replacement#exercises"], "kind": "protocol"}
+{"id": "protocol-12", "patient_id": "P005", "question": "How can I bring up the phlegm?", "relevant": ["protocol-pneumonia#clearing-phlegm"], "kind": "protocol"}
+{"id": "operations-01", "patient_id": "P001", "question": "Do I need to fast before my blood test?", "relevant": ["faq-lab-preparation#fasting-before-blood-tests"], "kind": "operations"}
+{"id": "operations-02", "patient_id": "P003", "question": "Should I take my metformin on the morning of the blood test?", "relevant": ["faq-lab-preparation#medicines-on-the-day-of-a-test"], "kind": "operations"}
+{"id": "operations-03", "patient_id": "P005", "question": "Do I need to prepare for the chest X-ray?", "relevant": ["faq-lab-preparation#chest-x-ray"], "kind": "operations"}
+{"id": "operations-04", "patient_id": "P002", "question": "When will my test results be ready?", "relevant": ["faq-lab-preparation#getting-results"], "kind": "operations"}
+{"id": "operations-05", "patient_id": "P004", "question": "Is the clinic open on Saturday?", "relevant": ["faq-visits#clinic-hours"], "kind": "operations"}
+{"id": "operations-06", "patient_id": "P002", "question": "Which entrance do I use for my appointment?", "relevant": ["faq-visits#arriving-and-checking-in"], "kind": "operations"}
+{"id": "operations-07", "patient_id": "P003", "question": "How much notice do I need to give to cancel a visit?", "relevant": ["faq-visits#cancelling-or-changing-a-visit"], "kind": "operations"}
+{"id": "operations-08", "patient_id": "P004", "question": "Can I get a wheelchair at the hospital?", "relevant": ["faq-visits#wheelchairs-and-interpreters"], "kind": "operations"}
+{"id": "stale_trap-01", "patient_id": "P001", "question": "How much fluid can I drink a day?", "relevant": ["P001-plan-v2#fluids-and-salt"], "kind": "stale_trap"}
+{"id": "stale_trap-02", "patient_id": "P001", "question": "How many days after discharge should my cardiology visit be?", "relevant": ["P001-plan-v2#follow-up-visits"], "kind": "stale_trap"}
+{"id": "stale_trap-03", "patient_id": "P001", "question": "How much weight gain should make me call the nurse?", "relevant": ["P001-plan-v2#warning-signs"], "kind": "stale_trap"}
+{"id": "stale_trap-04", "patient_id": "P001", "question": "Do I need a blood test before my cardiology appointment?", "relevant": ["P001-plan-v2#follow-up-visits"], "kind": "stale_trap"}
+{"id": "stale_trap-05", "patient_id": "P001", "question": "When can I drive again?", "relevant": ["P001-plan-v2#driving", "protocol-heart-failure#driving"], "kind": "stale_trap"}
+{"id": "condition_trap-01", "patient_id": "P004", "question": "How long until I can drive?", "relevant": ["P004-plan-v1#walking-and-driving", "protocol-hip-replacement#driving"], "kind": "condition_trap"}
+{"id": "condition_trap-02", "patient_id": "P005", "question": "How much should I drink each day?", "relevant": ["P005-plan-v1#rest-and-fluids"], "kind": "condition_trap"}
+{"id": "condition_trap-03", "patient_id": "P002", "question": "How much exercise should I do?", "relevant": ["P002-plan-v1#activity", "protocol-copd#staying-active"], "kind": "condition_trap"}
+{"id": "not_covered-01", "patient_id": "P004", "question": "Can I drink alcohol with apixaban?", "relevant": [], "kind": "not_covered"}
+{"id": "not_covered-02", "patient_id": "P001", "question": "Can I take ibuprofen for my knee pain?", "relevant": [], "kind": "not_covered"}
+{"id": "not_covered-03", "patient_id": "P003", "question": "Should I double my metformin if my sugar is high?", "relevant": [], "kind": "not_covered"}
+{"id": "not_covered-04", "patient_id": "P002", "question": "Can I travel by plane next month?", "relevant": [], "kind": "not_covered"}
+{"id": "not_covered-05", "patient_id": "P005", "question": "What is my cholesterol level?", "relevant": [], "kind": "not_covered"}
+{"id": "not_covered-06", "patient_id": "P001", "question": "Can you book me an appointment for today?", "relevant": [], "kind": "not_covered"}
+{"id": "not_covered-07", "patient_id": "P004", "question": "Can I have a massage on my hip?", "relevant": [], "kind": "not_covered"}

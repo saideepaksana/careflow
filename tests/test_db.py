@@ -1,6 +1,7 @@
 import psycopg
 import pytest
 
+from careflow.db import repository
 from careflow.db.repository import get_current_care_plan
 
 
@@ -71,3 +72,10 @@ def test_only_one_pending_confirmation_per_conversation(db: psycopg.Connection) 
 def test_checkpoint_tables_exist(db: psycopg.Connection) -> None:
     row = db.execute("SELECT to_regclass('public.checkpoints') AS name").fetchone()
     assert row["name"] == "checkpoints"
+
+
+def test_stale_runs_skip_runs_still_in_flight(db: psycopg.Connection) -> None:
+    repository.create_conversation(db, "conv-stale", "P001")
+    repository.create_workflow_run(db, "conv-stale:1", "conv-stale")
+    assert repository.stale_runs(db, "running", 60) == []
+    assert repository.stale_runs(db, "running", 0) == ["conv-stale:1"]

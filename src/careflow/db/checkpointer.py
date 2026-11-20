@@ -11,6 +11,14 @@ def open_checkpointer(database_url: str) -> PostgresSaver:
     return PostgresSaver(checkpointer_connection(database_url))
 
 
+def is_alive(saver: PostgresSaver) -> bool:
+    try:
+        saver.conn.execute("SELECT 1")
+    except psycopg.Error:
+        return False
+    return True
+
+
 def setup_checkpointer(database_url: str) -> None:
     with checkpointer_connection(database_url) as conn:
         PostgresSaver(conn).setup()

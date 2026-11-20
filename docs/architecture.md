@@ -6,21 +6,28 @@ This document summarises the design in the [proposal](proposal.pdf). Section 4 o
 
 ```mermaid
 flowchart TD
-    P[Patient portal] --> API[FastAPI: auth, conversations, polling]
+    P[Patient portal] --> API[FastAPI: auth, conversations, confirmation, coordinator decisions]
     C[Coordinator console] --> API
     API --> I[Intake agent<br/>LLM, no tools]
     I --> G[Safety gate<br/>code: red flags + plan warning signs]
-    G -->|emergency / urgent / out of scope| H[Coordinator handoff<br/>interrupt]
-    G -->|routine| S[Supervisor<br/>code: routes on state, caps]
+    G -->|emergency / urgent| X[Escalate<br/>coordinator task, fixed reply]
+    G -->|no escalation| S[Supervisor<br/>code: routes items, caps]
     S -->|care-plan question| K[Care-plan agent<br/>hybrid RAG, cites]
     S -->|appointment request| SP[Scheduling planner<br/>LLM, no write tools]
-    S -->|clinical question| H
+    S -->|symptom report / clinical request| H[Hand-off<br/>coordinator task]
     SP --> V[Verifier<br/>code: care-plan rules, DB state]
-    V -->|outside plan| H
-    V -->|patient confirms| E[Executor<br/>only writer, idempotent]
-    K --> F[Finalize: response, audit, memory]
-    E --> F
-    H -->|nurse decision resumes thread| F
+    V -->|fixable, capped| SP
+    V -->|replans exhausted| H
+    V -->|valid| CF[Patient confirmation<br/>interrupt]
+    CF -->|outside plan| CA[Coordinator approval<br/>interrupt, resumes on the nurse's decision]
+    CF -->|in plan| E[Executor<br/>only writer, idempotent]
+    CA -->|approved| E
+    K --> S
+    H --> S
+    E --> S
+    S -->|all items done| F[Finalize: reply, audit]
+    X --> F
+    CA -->|denied| F
 ```
 
 LangGraph checkpoints the workflow state in PostgreSQL after every node. Each patient request runs on its own thread, so a request waiting hours for a coordinator is not disturbed by later messages. A patient confirmation or a coordinator decision resumes that thread, even after a server restart.

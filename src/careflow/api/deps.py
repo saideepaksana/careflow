@@ -1,9 +1,13 @@
 from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Annotated
 
-from fastapi import Depends, Header, HTTPException, Request
+from fastapi import Depends, Header, HTTPException, Path, Request
+from pydantic import AfterValidator
 
-from careflow.db.checkpointer import open_checkpointer
+from careflow.config import ID_MAX_CHARS
+from careflow.db import repository
+from careflow.db.checkpointer import is_alive, open_checkpointer
 from careflow.db.connection import Connection, connect
 from careflow.graph.nodes import WorkflowDeps
 from careflow.graph.workflow import Checkpointer
@@ -15,6 +19,26 @@ from careflow.memory.embeddings import Embedder, FastEmbedder
 def get_conn(request: Request) -> Iterator[Connection]:
     with connect(request.app.state.settings.database_url, autocommit=True) as conn:
         yield conn
+
+
+def require_storable(text: str) -> str:
+    """Reject text PostgreSQL cannot store: NUL bytes and unpaired surrogates."""
+    if "\x00" in text:
+        raise ValueError("text contains a NUL byte")
+    text.encode()
+    return text
+
+
+Storable = Annotated[str, AfterValidator(require_storable)]
+PathId = Annotated[str, Path(max_length=ID_MAX_CHARS), AfterValidator(require_storable)]
+
+
+@contextmanager
+def exclusive(conn: Connection, conversation_id: str) -> Iterator[None]:
+    with repository.conversation_lock(conn, conversation_id) as locked:
+        if not locked:
+            raise HTTPException(status_code=423, detail="still working on the previous request")
+        yield
 
 
 def get_llm(request: Request) -> LLM:
@@ -40,6 +64,9 @@ def get_reranker(request: Request) -> Reranker:
 
 def get_checkpointer(request: Request) -> Checkpointer:
     state = request.app.state
+    if state.checkpointer is not None and not is_alive(state.checkpointer):
+        state.checkpointer.conn.close()
+        state.checkpointer = None
     if state.checkpointer is None:
         state.checkpointer = open_checkpointer(state.settings.database_url)
     return state.checkpointer

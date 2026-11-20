@@ -4,17 +4,39 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from careflow.agents.intake import Turn
 from careflow.api import coordinator
-from careflow.api.deps import Checkpoints, Db, Llm, Memory, PatientId, Workflow
+from careflow.api.deps import (
+    Checkpoints,
+    Db,
+    Llm,
+    Memory,
+    PathId,
+    PatientId,
+    Storable,
+    Workflow,
+    exclusive,
+)
 from careflow.api.sessions import SessionStore
-from careflow.config import MESSAGE_MAX_CHARS, load_settings
+from careflow.config import ID_MAX_CHARS, MESSAGE_MAX_CHARS, load_settings
 from careflow.db import repository
 from careflow.db.connection import Connection
-from careflow.graph.workflow import RunContext, RunResult, resume_run, start_run
+from careflow.graph.nodes import WorkflowDeps
+from careflow.graph.workflow import (
+    Checkpointer,
+    NoPendingInterrupt,
+    RunContext,
+    RunResult,
+    resume_run,
+    start_run,
+)
 from careflow.llm.gateway import LLM, LLMOutputError, LLMUnavailableError
+from careflow.memory.embeddings import Embedder
 from careflow.memory.manager import (
     MemoryWriteResult,
     digest_session,
@@ -40,7 +62,7 @@ class PatientOut(BaseModel):
 
 
 class LoginIn(BaseModel):
-    patient_id: str
+    patient_id: Storable = Field(max_length=ID_MAX_CHARS)
 
 
 class LoginOut(BaseModel):
@@ -59,7 +81,7 @@ class MessageOut(BaseModel):
 
 
 class MessageIn(BaseModel):
-    text: str = Field(min_length=1, max_length=MESSAGE_MAX_CHARS)
+    text: Storable = Field(min_length=1, max_length=MESSAGE_MAX_CHARS)
 
 
 class ConfirmIn(BaseModel):
@@ -107,7 +129,7 @@ def create_conversation(patient_id: PatientId, conn: Db) -> ConversationOut:
 
 
 @router.get("/conversations/{conversation_id}/messages")
-def list_messages(conversation_id: str, patient_id: PatientId, conn: Db) -> list[MessageOut]:
+def list_messages(conversation_id: PathId, patient_id: PatientId, conn: Db) -> list[MessageOut]:
     require_conversation(conn, conversation_id, patient_id)
     return [MessageOut(**row) for row in repository.list_messages(conn, conversation_id)]
 
@@ -146,7 +168,7 @@ def refresh_working_memory(llm: LLM, conn: Connection, conversation_id: str) -> 
 
 @router.post("/conversations/{conversation_id}/messages")
 def post_message(
-    conversation_id: str,
+    conversation_id: PathId,
     body: MessageIn,
     patient_id: PatientId,
     conn: Db,
@@ -156,23 +178,39 @@ def post_message(
     checkpointer: Checkpoints,
 ) -> ReplyOut:
     require_conversation(conn, conversation_id, patient_id)
-    if repository.pending_confirmation(conn, conversation_id):
-        raise HTTPException(status_code=409, detail="please answer the pending confirmation")
+    with exclusive(conn, conversation_id):
+        if repository.pending_confirmation(conn, conversation_id):
+            raise HTTPException(status_code=409, detail="please answer the pending confirmation")
+        return run_message(
+            conn, llm, embedder, deps, checkpointer, conversation_id, patient_id, body.text
+        )
+
+
+def run_message(
+    conn: Connection,
+    llm: LLM,
+    embedder: Embedder,
+    deps: WorkflowDeps,
+    checkpointer: Checkpointer,
+    conversation_id: str,
+    patient_id: str,
+    text: str,
+) -> ReplyOut:
     with traced_request("api.message", **{"careflow.patient_id": patient_id}):
         memory = refresh_working_memory(llm, conn, conversation_id)
-        repository.insert_message(conn, conversation_id, "patient", body.text)
+        repository.insert_message(conn, conversation_id, "patient", text)
         context = RunContext(
             summary=render_summary(memory.summary),
             recent=memory.recent,
-            memories=recall(conn, embedder, patient_id, body.text),
+            memories=recall(conn, embedder, patient_id, text),
         )
-        result = start_run(deps, checkpointer, conversation_id, patient_id, body.text, context)
+        result = start_run(deps, checkpointer, conversation_id, patient_id, text, context)
     return reply_from(result)
 
 
 @router.post("/conversations/{conversation_id}/confirm")
 def confirm(
-    conversation_id: str,
+    conversation_id: PathId,
     body: ConfirmIn,
     patient_id: PatientId,
     conn: Db,
@@ -180,37 +218,58 @@ def confirm(
     checkpointer: Checkpoints,
 ) -> ReplyOut:
     require_conversation(conn, conversation_id, patient_id)
-    thread_id = repository.pending_confirmation(conn, conversation_id)
-    if thread_id is None:
-        raise HTTPException(status_code=409, detail="nothing to confirm")
-    repository.insert_message(conn, conversation_id, "patient", "Yes" if body.approved else "No")
-    with traced_request("api.confirm", **{"careflow.patient_id": patient_id}):
-        result = resume_run(deps, checkpointer, thread_id, "confirmation", body.approved)
+    with exclusive(conn, conversation_id):
+        if repository.get_conversation_state(conn, conversation_id)["ended_at"] is not None:
+            raise HTTPException(status_code=409, detail="conversation has ended")
+        thread_id = repository.pending_confirmation(conn, conversation_id)
+        if thread_id is None:
+            raise HTTPException(status_code=409, detail="nothing to confirm")
+        answer = "Yes" if body.approved else "No"
+        repository.insert_message(conn, conversation_id, "patient", answer)
+        with traced_request("api.confirm", **{"careflow.patient_id": patient_id}):
+            result = resume_or_conflict(deps, checkpointer, thread_id, body.approved)
     return reply_from(result)
+
+
+def resume_or_conflict(
+    deps: WorkflowDeps, checkpointer: Checkpointer, thread_id: str, approved: bool
+) -> RunResult:
+    try:
+        return resume_run(deps, checkpointer, thread_id, "confirmation", approved)
+    except NoPendingInterrupt as error:
+        raise HTTPException(status_code=409, detail="nothing to confirm") from error
 
 
 @router.post("/conversations/{conversation_id}/end")
 def end_conversation(
-    conversation_id: str, patient_id: PatientId, conn: Db, llm: Llm, embedder: Memory
+    conversation_id: PathId, patient_id: PatientId, conn: Db, llm: Llm, embedder: Memory
 ) -> MemoryWriteResult:
     require_conversation(conn, conversation_id, patient_id)
-    memory, _ = load_working_memory(conn, conversation_id)
-    if memory.summary is None and not memory.recent:
-        repository.end_conversation(conn, conversation_id)
-        return MemoryWriteResult()
-    try:
-        with traced_request("api.end", **{"careflow.patient_id": patient_id}):
-            digest = digest_session(llm, memory.summary, memory.recent)
-    except (LLMOutputError, LLMUnavailableError) as error:
-        raise HTTPException(status_code=503, detail="memory could not be written") from error
-    repository.end_conversation(conn, conversation_id)
-    return write_session_memory(conn, embedder, patient_id, conversation_id, digest)
+    with exclusive(conn, conversation_id):
+        memory, _ = load_working_memory(conn, conversation_id)
+        if memory.summary is None and not memory.recent:
+            repository.end_conversation(conn, conversation_id)
+            return MemoryWriteResult()
+        try:
+            with traced_request("api.end", **{"careflow.patient_id": patient_id}):
+                digest = digest_session(llm, memory.summary, memory.recent)
+        except (LLMOutputError, LLMUnavailableError) as error:
+            raise HTTPException(status_code=503, detail="memory could not be written") from error
+        with conn.transaction():
+            repository.end_conversation(conn, conversation_id)
+            return write_session_memory(conn, embedder, patient_id, conversation_id, digest)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     setup_tracing(app.state.settings.otel_endpoint)
     yield
+
+
+async def validation_failed(_: Request, error: RequestValidationError) -> JSONResponse:
+    """422 without echoing the input, which may hold patient text or unencodable characters."""
+    details = [{k: v for k, v in item.items() if k != "input"} for item in error.errors()]
+    return JSONResponse(status_code=422, content={"detail": jsonable_encoder(details)})
 
 
 def create_app(llm: LLM | None = None) -> FastAPI:
@@ -221,6 +280,7 @@ def create_app(llm: LLM | None = None) -> FastAPI:
     app.state.embedder = None
     app.state.reranker = None
     app.state.checkpointer = None
+    app.add_exception_handler(RequestValidationError, validation_failed)
     app.include_router(router)
     app.include_router(coordinator.router)
     return app

@@ -5,6 +5,7 @@ import pytest
 
 from careflow.agents.tools import PatientTools
 from careflow.config import CORPUS_DIR
+from careflow.db import repository
 from careflow.knowledge.corpus import ingest_corpus
 from careflow.knowledge.rerank import FakeReranker
 from careflow.memory.embeddings import FakeEmbedder
@@ -109,3 +110,11 @@ def test_search_documents_returns_only_own_current_documents(db: psycopg.Connect
     assert results
     assert not [source for source in sources if source.startswith("P001-plan-v1")]
     assert not [source for source in sources if source[:4] in {"P002", "P003", "P004", "P005"}]
+
+
+def test_another_patients_key_is_never_replayed(db: psycopg.Connection) -> None:
+    window = {"specialty": "cardiology", "start_date": "2026-11-03", "end_date": "2026-11-20"}
+    slots = make_tools(db, "P001", "conv-a").call_tool("find_slots", window)["data"]
+    repository.book_appointment(db, "P001", slots[0]["id"], None, "shared-key")
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        repository.book_appointment(db, "P002", slots[1]["id"], None, "shared-key")

@@ -66,7 +66,7 @@ def survive(deps: WorkflowDeps, url: str, step: Callable[[], RunResult]) -> RunR
     try:
         return step()
     except SimulatedCrash:
-        [thread_id] = repository.runs_with_status(deps.conn, "running")
+        [thread_id] = repository.stale_runs(deps.conn, "running", 0)
         return recover_run(deps, open_checkpointer(url), thread_id)
 
 
