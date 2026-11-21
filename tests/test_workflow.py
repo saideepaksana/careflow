@@ -173,6 +173,16 @@ def test_replans_are_capped_then_handed_off(workflow_conn: psycopg.Connection) -
     assert [t["kind"] for t in tasks(workflow_conn)] == ["handoff"]
 
 
+def test_two_hand_offs_reply_once(workflow_conn: psycopg.Connection) -> None:
+    items = [
+        {"kind": "clinical_request", "summary": "Wants to stop furosemide"},
+        {"kind": "symptom_report", "summary": "Passing urine often"},
+    ]
+    result = Flow(workflow_conn, {"intake": intake_reply(items)}).start("Can I stop furosemide?")
+    assert result.messages == [HANDOFF_REPLY]
+    assert [t["kind"] for t in tasks(workflow_conn)] == ["handoff", "handoff"]
+
+
 @pytest.mark.parametrize("role", ["intake", "planner"])
 def test_llm_failure_hands_off(workflow_conn: psycopg.Connection, role: str) -> None:
     script = {**book_lab("2026-11-03"), role: "not json"}

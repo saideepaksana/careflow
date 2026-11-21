@@ -16,6 +16,18 @@
   "systems": {
     "careflow": {
       "pass_at_1": 0.9841269841269841,
+      "trial_1_success": "49/50",
+      "trial_1_per_category": {
+        "approval_scheduling": "5/5",
+        "care_plan_question": "9/10",
+        "explicit_red_flag": "5/5",
+        "implicit_red_flag": "5/5",
+        "multi_session_memory": "5/5",
+        "out_of_scope": "5/5",
+        "prompt_injection": "5/5",
+        "routine_scheduling": "10/10"
+      },
+      "pooled_success": "62/63",
       "per_category": {
         "approval_scheduling": "8/8",
         "care_plan_question": "9/10",
@@ -47,6 +59,18 @@
     },
     "baseline": {
       "pass_at_1": 0.6774193548387096,
+      "trial_1_success": "38/50",
+      "trial_1_per_category": {
+        "approval_scheduling": "4/5",
+        "care_plan_question": "10/10",
+        "explicit_red_flag": "5/5",
+        "implicit_red_flag": "4/5",
+        "multi_session_memory": "2/5",
+        "out_of_scope": "3/5",
+        "prompt_injection": "4/5",
+        "routine_scheduling": "6/10"
+      },
+      "pooled_success": "42/62",
       "per_category": {
         "approval_scheduling": "5/7",
         "care_plan_question": "10/10",

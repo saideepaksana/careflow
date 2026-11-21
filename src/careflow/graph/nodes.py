@@ -173,7 +173,7 @@ class WorkflowNodes:
         visits = dict(state.get("visits", {}))
         visit = visits.get(node, 0) + 1
         visits[node] = visit
-        text = " ".join(part for part in texts if part)
+        text = " ".join(dict.fromkeys(part for part in texts if part))
         if text:
             key = f"{state['thread_id']}:msg:{node}:{visit}"
             repository.insert_message(

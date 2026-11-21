@@ -1,6 +1,6 @@
 # CareFlow architecture
 
-This document summarises the design in the [proposal](proposal.pdf). Section 4 of the proposal explains why each part exists. If a decision changes, update both documents.
+This document describes the system as built. The [proposal](proposal.pdf) explains why each part exists and was approved at commit 2fbbdda (2026-11-06), with two lines updated on 2026-11-15; where the build differs from it (polling instead of SSE, per-model breakers, Markdown-only corpus, no response caching, scripted patients only), the change is recorded in the [Architecture Decision Records](Architecture_Decision_Records.md).
 
 ## Request flow
 
@@ -66,7 +66,7 @@ Agents reach patient data, documents and write tools only through three MCP serv
 PostgreSQL with pgvector is the single store.
 
 - Clinical (synthetic, FHIR-like): `patients`, `encounters`, `care_plans` (versioned, immutable once published), `care_plan_items` (follow-up, lab, medication, warning sign with severity, activity rule).
-- Scheduling: `clinicians`, `slots`, `appointments` (linked to the care-plan item they fulfil). There is one active booking per slot, and idempotency keys are unique.
+- Scheduling: `clinicians`, `slots`, `appointments` (linked to the care-plan item they fulfil), and `action_results` (the stored result of every keyed write, so a replayed call returns it instead of acting twice). There is one active booking per slot, and idempotency keys are unique.
 - Interaction history: `conversations`, `workflow_runs` (one LangGraph thread per patient request), `messages`, `memories` (type, key, content, source conversation, embedding, `superseded_by`).
 - Knowledge: `documents` (owner or shared, version, effective dates) and `chunks` (section id, `tsvector`, embedding).
 - Operations: `coordinator_tasks`, append-only `audit_events` with `trace_id`, and the LangGraph checkpoint tables.

@@ -2,6 +2,7 @@ import json
 import random
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 from careflow.config import EVAL_TRIALS, PROJECT_ROOT
@@ -31,7 +32,7 @@ def read_jsonl(path: Path) -> list[dict]:
 
 def crash_resume() -> dict:
     result = subprocess.run(
-        [".venv/bin/pytest", "-q", "tests/test_crash_resume.py"],
+        [sys.executable, "-m", "pytest", "-q", "tests/test_crash_resume.py"],
         capture_output=True,
         text=True,
         cwd=PROJECT_ROOT,
@@ -44,11 +45,20 @@ def crash_resume() -> dict:
     }
 
 
+def success_count(rows: list[dict], system: str) -> str:
+    cells = metrics.valid(rows, system)
+    return f"{sum(row['success'] for row in cells)}/{len(cells)}"
+
+
 def system_metrics(
     rows: list[dict], judgements: list[dict], system: str, covered: set[str]
 ) -> dict:
+    first_trial = [row for row in rows if row["trial"] == 1]
     return {
         "pass_at_1": metrics.pass_at_1(rows, system),
+        "trial_1_success": success_count(first_trial, system),
+        "trial_1_per_category": metrics.per_category(first_trial, system),
+        "pooled_success": success_count(rows, system),
         "per_category": metrics.per_category(rows, system),
         "missed_escalation_rate": metrics.missed_escalation_rate(rows, system),
         "false_escalation_rate": metrics.false_escalation_rate(rows, system),
@@ -141,10 +151,23 @@ def percent(value: float | None) -> str:
     return "n/a" if value is None else f"{value:.0%}"
 
 
+def category_table(title: str, careflow: dict, baseline: dict) -> list[str]:
+    lines = ["", f"| {title} | CareFlow | Baseline |", "|---|---|---|"]
+    return lines + [
+        f"| {cat} | {careflow.get(cat, '-')} | {baseline.get(cat, '-')} |"
+        for cat in sorted(careflow | baseline)
+    ]
+
+
 def markdown(summary: dict) -> str:
     cf, bl = summary["systems"]["careflow"], summary["systems"]["baseline"]
     rows = [
-        ("Task success pass@1", percent(cf["pass_at_1"]), percent(bl["pass_at_1"])),
+        ("Task success, trial 1", cf["trial_1_success"], bl["trial_1_success"]),
+        (
+            "Task success, all valid cells",
+            f"{percent(cf['pass_at_1'])} ({cf['pooled_success']})",
+            f"{percent(bl['pass_at_1'])} ({bl['pooled_success']})",
+        ),
         (
             f"pass^{summary['pass_hat_k']['k']} (n={summary['pass_hat_k']['n']})",
             percent(summary["pass_hat_k"]["careflow"]),
@@ -193,11 +216,10 @@ def markdown(summary: dict) -> str:
     ]
     lines = ["| Metric | CareFlow | Baseline |", "|---|---|---|"]
     lines += [f"| {name} | {a} | {b} |" for name, a, b in rows]
-    lines += ["", "| Category | CareFlow | Baseline |", "|---|---|---|"]
-    lines += [
-        f"| {cat} | {cf['per_category'].get(cat, '-')} | {bl['per_category'].get(cat, '-')} |"
-        for cat in sorted(cf["per_category"] | bl["per_category"])
-    ]
+    lines += category_table(
+        "Category, trial 1", cf["trial_1_per_category"], bl["trial_1_per_category"]
+    )
+    lines += category_table("Category, all valid cells", cf["per_category"], bl["per_category"])
     crash = summary["crash_resume"]
     lines += [
         "",
