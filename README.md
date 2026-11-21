@@ -200,6 +200,7 @@ All of them need the seed and ingest steps first. To recompute the published tab
 | The first request or ingest is slow | The models are downloading to `data/models/`. |
 | `UniqueViolation` or deadlocks in tests | Another pytest process is using `careflow_test`. |
 | The chat answers 423 | Another request on the same conversation is still running. Wait for it. |
+| The chat answers 409 `please answer the pending confirmation` | A booking is waiting for Yes or No. Answer it first; a red-flag message is still accepted and declines the pending booking. |
 
 ### External services, cost and quota
 
